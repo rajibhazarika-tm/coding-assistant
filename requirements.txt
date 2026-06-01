@@ -1,0 +1,16 @@
+# Core dependencies
+requests>=2.31.0          # Ollama API calls
+chromadb>=0.5.0           # Local vector store (no server needed)
+
+# AST-based chunking (tree-sitter)
+# tree-sitter-languages provides pre-built parsers for 100+ languages
+# No need to compile grammars manually
+tree-sitter>=0.21.0
+tree-sitter-languages>=1.10.0
+
+# CLI utilities
+rich>=13.0.0              # Pretty terminal output (optional but nice)
+
+# NOTE: rank-bm25 removed — the project uses its own BM25 implementation
+# in retriever/hybrid_search.py tuned for code tokenisation (camelCase splitting).
+# Python >= 3.9 required (uses Path.is_relative_to).
