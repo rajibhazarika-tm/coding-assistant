@@ -738,6 +738,8 @@ class App(ctk.CTk):
         _field(s3, 1, 0, "Embed Workers", "workers", "2")
         _field(s3, 1, 1, "ChromaDB Batch Size", "batch", "128")
         _field(s3, 2, 0, "Embed num_ctx", "numctx", "8192")
+        _field(s3, 2, 1, "Embed max chars/chunk", "maxchars", "2048")
+        _field(s3, 3, 0, "Embed max chars/query", "querymaxchars", "1500")
 
         save_row = ctk.CTkFrame(p, fg_color="transparent")
         save_row.grid(row=3, column=0, padx=16, pady=16, sticky="ew")
@@ -768,6 +770,8 @@ class App(ctk.CTk):
                 "maxtok": s.LLM_MAX_TOKENS,
                 "workers": s.EMBED_WORKERS, "batch": s.CHROMA_BATCH_SIZE,
                 "numctx": s.EMBED_NUM_CTX,
+                "maxchars": s.EMBED_MAX_CHARS,
+                "querymaxchars": s.EMBED_QUERY_MAX_CHARS,
             }
             for key, val in mapping.items():
                 e = getattr(self, f"_s_{key}", None)
@@ -795,6 +799,8 @@ class App(ctk.CTk):
                 "temp": "LLM_TEMPERATURE", "maxtok": "LLM_MAX_TOKENS",
                 "workers": "EMBED_WORKERS", "batch": "CHROMA_BATCH_SIZE",
                 "numctx": "EMBED_NUM_CTX",
+            "maxchars": "EMBED_MAX_CHARS",
+            "querymaxchars": "EMBED_QUERY_MAX_CHARS",
             }
             for field_key, env_key in mapping.items():
                 e = getattr(self, f"_s_{field_key}", None)

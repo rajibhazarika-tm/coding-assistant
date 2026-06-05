@@ -45,35 +45,41 @@ class CodeChunk:
         return f"{self.repo_id}:{base}" if self.repo_id else base
 
     # Maximum characters sent to the embedding model.
-    # nomic-embed-text supports 8192 tokens (~32k chars) but Ollama's default
-    # num_ctx is 2048 (~8k chars). We cap at 6000 chars (~1500 tokens) so we
-    # stay safely within the default AND the explicit num_ctx=8192 we now pass.
-    # This only affects the embedding input — the full chunk content is still
-    # stored in ChromaDB and sent to the LLM unchanged.
-    EMBED_MAX_CHARS: int = 6000
+    # Sourced from config.settings.EMBED_MAX_CHARS (default 2048).
+    # At ~2 chars/token for dense Java/Kotlin, 2048 chars ≈ 1024 tokens —
+    # safely within any Ollama num_ctx regardless of build defaults.
+    # Override via env: EMBED_MAX_CHARS=4096 for richer semantic context.
+    EMBED_MAX_CHARS: int = 2048  # overridden at runtime below
 
     @property
     def embedding_text(self) -> str:
         """Text sent to the embedding model.
 
-        Truncated to EMBED_MAX_CHARS to prevent Ollama 500 errors caused by
-        nomic-embed-text context overflow on long chunks (intermittent with
-        50-line chunks containing verbose Java/Kotlin identifiers or long paths).
+        Truncated to EMBED_MAX_CHARS (from settings, default 2048 chars) to
+        prevent "input length exceeds context length" 500 errors from Ollama.
+        Reading from settings at call time so env-var changes take effect
+        without restarting.
         """
-        parts = []
+        from config.settings import EMBED_MAX_CHARS as _max_chars
+
+        # Build metadata lines separately from code content so we can
+        # truncate ONLY the code, never the metadata.
+        meta_lines = []
         if self.context_header:
-            parts.append(f"# {self.context_header}")
-        # Use only the last 3 path components to keep path tokens short
+            meta_lines.append(f"# {self.context_header}")
         short_path = "/".join(Path(self.file_path).parts[-3:])
-        parts.append(f"# {short_path}")
-        parts.append(self.content)
-        full = "\n".join(parts)
-        if len(full) <= self.EMBED_MAX_CHARS:
+        meta_lines.append(f"# {short_path}")
+        meta = "\n".join(meta_lines) + "\n"
+
+        full = meta + self.content
+        if len(full) <= _max_chars:
             return full
-        # Truncate content, not metadata — keep header + path, cut from end of code
-        meta = "\n".join(parts[:2]) + "\n"
-        max_content = self.EMBED_MAX_CHARS - len(meta)
-        return meta + self.content[:max_content]
+
+        # Truncate code content only — keep all metadata
+        max_code = _max_chars - len(meta)
+        if max_code <= 0:
+            return meta  # path alone exceeds limit (extreme edge case)
+        return meta + self.content[:max_code]
 
 
 # ─── tree-sitter node types that represent top-level declarations ─────────────

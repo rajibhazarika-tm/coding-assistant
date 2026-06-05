@@ -53,6 +53,8 @@ class SettingsUpdate(BaseModel):
     embed_workers: Optional[int] = None
     chroma_batch_size: Optional[int] = None
     embed_num_ctx: Optional[int] = None
+    embed_max_chars: Optional[int] = None
+    embed_query_max_chars: Optional[int] = None
     llm_temperature: Optional[float] = None
     llm_max_tokens: Optional[int] = None
 
@@ -78,6 +80,8 @@ def get_settings():
         "embed_workers": s.EMBED_WORKERS,
         "chroma_batch_size": s.CHROMA_BATCH_SIZE,
         "embed_num_ctx": s.EMBED_NUM_CTX,
+        "embed_max_chars": s.EMBED_MAX_CHARS,
+        "embed_query_max_chars": s.EMBED_QUERY_MAX_CHARS,
         "llm_temperature": s.LLM_TEMPERATURE,
         "llm_max_tokens": s.LLM_MAX_TOKENS,
     }
@@ -99,6 +103,8 @@ def update_settings(req: SettingsUpdate):
         "chunk_max_lines": "CHUNK_MAX_LINES", "embed_workers": "EMBED_WORKERS",
         "chroma_batch_size": "CHROMA_BATCH_SIZE",
         "embed_num_ctx": "EMBED_NUM_CTX",
+        "embed_max_chars": "EMBED_MAX_CHARS",
+        "embed_query_max_chars": "EMBED_QUERY_MAX_CHARS",
         "llm_temperature": "LLM_TEMPERATURE", "llm_max_tokens": "LLM_MAX_TOKENS",
     }
     for field, env_key in mapping.items():

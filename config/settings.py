@@ -132,6 +132,20 @@ CHROMA_BATCH_SIZE = int(os.getenv("CHROMA_BATCH_SIZE", "128"))
 # Setting this explicitly to 8192 prevents that error entirely.
 EMBED_NUM_CTX = int(os.getenv("EMBED_NUM_CTX", "8192"))
 
+# Maximum characters sent to the embedding model per chunk.
+# nomic-embed-text uses WordPiece tokenisation where dense Java/Kotlin code
+# can average ~2 chars/token (annotations, generics, brackets each = 1 token).
+# 2048 chars / 2 chars/token = ~1024 tokens — well within any Ollama num_ctx.
+# This is enough for semantic search quality (captures the function signature
+# + first 30-40 lines of body) and prevents ALL context overflow 500 errors.
+EMBED_MAX_CHARS = int(os.getenv("EMBED_MAX_CHARS", "2048"))
+
+# Maximum characters for an embedded query (user question / error log paste).
+# Queries are almost always short, but pasting a 500-line stack trace causes
+# "input length exceeds context length". 1500 chars = ~375-750 tokens, plenty
+# for semantic matching.
+EMBED_QUERY_MAX_CHARS = int(os.getenv("EMBED_QUERY_MAX_CHARS", "1500"))
+
 # ─── LLM Generation ───────────────────────────────────────────────────────────
 LLM_TEMPERATURE = 0.1       # Low temperature for deterministic code output
 LLM_MAX_TOKENS = 1024       # Enough for a function or review; keep short for speed

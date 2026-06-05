@@ -44,17 +44,52 @@ class RetrievedChunk:
         return f"{loc} [{self.chunk_type}]"
 
 
-def _embed_query(query: str) -> list[float]:
-    """Embed the user query for vector search."""
-    import requests
+# Maximum chars for a query sent to the embedding model.
+# Read from settings so it's tunable via EMBED_QUERY_MAX_CHARS env var.
+# Default 1500: safe for all Ollama builds, plenty for semantic search.
+def _query_max_chars() -> int:
+    from config.settings import EMBED_QUERY_MAX_CHARS
+    return EMBED_QUERY_MAX_CHARS
 
-    response = requests.post(
-        f"{OLLAMA_BASE_URL}/api/embeddings",
-        json={"model": EMBED_MODEL, "prompt": query},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()["embedding"]
+
+def _embed_query(query: str) -> list[float]:
+    """Embed the user query for vector search.
+
+    Applies the same protections as _embed_one in embedder.py:
+    - Truncates query to _QUERY_MAX_CHARS (guards against pasted error logs)
+    - Passes num_ctx=8192 so Ollama doesn't default to 2048
+    - Retries on HTTP 500/503 (transient Ollama overload)
+    """
+    import requests
+    import time
+    from config.settings import EMBED_NUM_CTX
+
+    # Truncate silently — the important semantic content is at the start
+    safe_query = query[:_query_max_chars()]
+
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                f"{OLLAMA_BASE_URL}/api/embeddings",
+                json={
+                    "model": EMBED_MODEL,
+                    "prompt": safe_query,
+                    "options": {"num_ctx": EMBED_NUM_CTX},
+                },
+                timeout=60,
+            )
+            if response.status_code in (500, 503):
+                raise requests.HTTPError(
+                    f"Ollama returned {response.status_code}: {response.text[:200]}",
+                    response=response,
+                )
+            response.raise_for_status()
+            return response.json()["embedding"]
+        except requests.RequestException as exc:
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
+    raise RuntimeError("unreachable")
 
 
 def _tokenize(text: str) -> list[str]:

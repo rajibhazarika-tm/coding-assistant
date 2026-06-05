@@ -41,6 +41,39 @@ def check_model_available(model: str = MODEL) -> bool:
         return False
 
 
+def _count_tokens_approx(messages: list[dict]) -> int:
+    """Rough token count for a message list (4 chars ≈ 1 token for code)."""
+    return sum(len(m.get("content", "")) for m in messages) // 4
+
+
+def _trim_history_to_budget(
+    system: str,
+    history: list[dict],
+    user_message: str,
+    max_tokens: int,
+    reserve_for_response: int,
+) -> list[dict]:
+    """
+    Drop oldest history pairs until the full message list fits within
+    (max_tokens - reserve_for_response). Always keeps at least the last
+    2 turns (1 user + 1 assistant) so chat remains coherent.
+    """
+    budget = max_tokens - reserve_for_response
+    base = [{"role": "system", "content": system}] if system else []
+    base += [{"role": "user", "content": user_message}]
+    base_tokens = _count_tokens_approx(base)
+
+    kept = list(history)
+    while kept and base_tokens + _count_tokens_approx(kept) > budget:
+        # Drop oldest pair (user + assistant = 2 messages)
+        if len(kept) >= 2:
+            kept = kept[2:]
+        else:
+            kept = []
+
+    return kept
+
+
 def stream_response(
     system: str,
     user_message: str,
@@ -51,13 +84,29 @@ def stream_response(
     """
     Stream tokens from Ollama as they arrive.
 
-    Yields string chunks suitable for printing to terminal.
+    Protects against "input length exceeds context length" by:
+    - Trimming oldest history turns when total token estimate exceeds budget
+    - Setting num_ctx explicitly so Ollama uses the right window size
+    - Truncating user_message as a last-resort safety net
     """
+    # Safety net: if the user message itself is enormous (e.g. pasted a full file),
+    # truncate it — better a partial answer than a 500 error
+    max_user_chars = (MAX_CONTEXT_TOKENS - 512) * 4  # ~4 chars/token, leave 512 for system+response
+    if len(user_message) > max_user_chars:
+        user_message = user_message[:max_user_chars] + "\n\n[...truncated to fit context window]"
+
+    trimmed_history = _trim_history_to_budget(
+        system=system,
+        history=history or [],
+        user_message=user_message,
+        max_tokens=MAX_CONTEXT_TOKENS,
+        reserve_for_response=LLM_MAX_TOKENS,
+    )
+
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
-    if history:
-        messages.extend(history)
+    messages.extend(trimmed_history)
     messages.append({"role": "user", "content": user_message})
 
     payload = {
