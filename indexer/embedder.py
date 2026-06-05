@@ -102,16 +102,37 @@ def _embed_parallel(
     return results
 
 
+def _get_already_indexed_ids(collection, chunk_ids: list[str]) -> set[str]:
+    """
+    Return the subset of chunk_ids that are already in ChromaDB.
+    Checked in batches to avoid hitting ChromaDB's get() size limits.
+    """
+    existing: set[str] = set()
+    batch_size = 5000  # ChromaDB handles up to ~5k IDs per get()
+    for i in range(0, len(chunk_ids), batch_size):
+        batch_ids = chunk_ids[i: i + batch_size]
+        try:
+            result = collection.get(ids=batch_ids, include=[])
+            existing.update(result.get("ids", []))
+        except Exception:
+            pass
+    return existing
+
+
 def index_chunks(
     chunks: list[CodeChunk],
     show_progress: bool = True,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
+    resume: bool = True,
 ) -> int:
     """
     Embed chunks in parallel and store in ChromaDB in large batches.
 
-    on_progress(indexed, total, eta_str) — called after each ChromaDB upsert,
-    useful for streaming progress to a UI.
+    resume=True (default): skips chunks whose IDs are already in ChromaDB,
+    so interrupted indexing jobs can be continued without re-embedding
+    everything from scratch.
+
+    on_progress(indexed, total, eta_str) — called after each ChromaDB upsert.
     """
     if not chunks:
         return 0
@@ -122,22 +143,50 @@ def index_chunks(
         metadata={"hnsw:space": "cosine"},
     )
 
+    # ── Resume: skip chunks already in the index ──────────────────────────────
+    if resume:
+        all_ids = [c.id for c in chunks]
+        already_done = _get_already_indexed_ids(collection, all_ids)
+        if already_done:
+            chunks = [c for c in chunks if c.id not in already_done]
+            if show_progress:
+                print(f"   ⏭️  Skipping {len(already_done)} already-indexed chunks"
+                      f" — {len(chunks)} remaining")
+        if not chunks:
+            if show_progress:
+                print("   ✅ All chunks already indexed — nothing to do")
+            return 0
+
     total = len(chunks)
     indexed = 0
     t_start = time.perf_counter()
+    # Rolling rate tracker: use last 200 completions for accurate ETA
+    # (avoids the ETA explosion at start when rate is measured over too few samples)
+    _recent_times: list[float] = []
 
     # ── Step 1: embed ALL chunks in parallel ──────────────────────────────────
     if show_progress:
-        print(f"   🔀 Embedding {total} chunks with {EMBED_WORKERS} parallel workers...")
+        print(f"   🔀 Embedding {total} chunks"
+              f" with {EMBED_WORKERS} parallel workers...")
 
     embed_done = [0]
     def _embed_progress(done, n):
         embed_done[0] = done
-        if show_progress and done % 50 == 0:
-            elapsed = time.perf_counter() - t_start
-            rate = done / elapsed if elapsed > 0 else 0
-            eta = (n - done) / rate if rate > 0 else 0
-            print(f"   ⚡ Embedding {done}/{n}  {rate:.0f}/s  ETA {eta:.0f}s", end="\r")
+        _recent_times.append(time.perf_counter())
+        # Compute rate from last 50 completions (not from t=0)
+        if len(_recent_times) > 200:
+            _recent_times.pop(0)
+        if len(_recent_times) >= 2 and show_progress and done % 20 == 0:
+            window_s = _recent_times[-1] - _recent_times[0]
+            window_n = len(_recent_times) - 1
+            rate = window_n / window_s if window_s > 0 else 0
+            eta_s = (n - done) / rate if rate > 0 else 0
+            eta_str = (f"{eta_s/3600:.1f}h" if eta_s > 3600
+                       else f"{eta_s/60:.0f}m" if eta_s > 60
+                       else f"{eta_s:.0f}s")
+            print(f"   ⚡ {done}/{n}  {rate:.1f}/s  ETA {eta_str}   ", end="\r")
+            if on_progress:
+                on_progress(done, n, eta_str)
 
     all_texts = [c.embedding_text for c in chunks]
     try:
@@ -148,7 +197,8 @@ def index_chunks(
 
     if show_progress:
         elapsed = time.perf_counter() - t_start
-        print(f"\n   ✅ Embedded {total} chunks in {elapsed:.1f}s  ({total/elapsed:.0f}/s)")
+        rate = total / elapsed if elapsed > 0 else 0
+        print(f"\n   ✅ Embedded {total} chunks in {elapsed:.1f}s  ({rate:.1f}/s)")
 
     # ── Step 2: upsert into ChromaDB in large batches ─────────────────────────
     t_db = time.perf_counter()

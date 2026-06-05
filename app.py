@@ -553,8 +553,9 @@ class App(ctk.CTk):
 
                     def _progress(indexed, total, eta):
                         pct = indexed / max(total, 1)
+                        pct_str = f"{pct*100:.0f}%"
                         self._stream_queue.put(("index_progress", pct,
-                            f"Embedding {indexed}/{total}  ETA {eta}"))
+                            f"Embedding {indexed:,}/{total:,} ({pct_str})  ETA {eta}"))
 
                     n = index_chunks(chunks, show_progress=False, on_progress=_progress)
                     total_indexed += n

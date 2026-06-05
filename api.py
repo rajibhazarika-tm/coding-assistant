@@ -220,7 +220,9 @@ async def index_stream(req: IndexRequest):
                 yield send("chunk_done", {"chunks": len(all_chunks)})
                 await asyncio.sleep(0)
 
-                yield send("status", {"message": f"Embedding {len(all_chunks)} chunks (parallel)..."})
+                yield send("status", {"message": f"Checking resume state..."})
+                await asyncio.sleep(0)
+                yield send("status", {"message": f"Embedding {len(all_chunks)} chunks (parallel, resume-safe)..."})
 
                 # Run blocking index_chunks in a thread so we don't block the event loop
                 progress_events = []
@@ -229,7 +231,8 @@ async def index_stream(req: IndexRequest):
 
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
-                    None, lambda: index_chunks(all_chunks, show_progress=False, on_progress=_on_progress)
+                    None, lambda: index_chunks(all_chunks, show_progress=False,
+                                               on_progress=_on_progress, resume=True)
                 )
                 for ev in progress_events:
                     yield send("index_progress", ev)

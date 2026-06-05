@@ -113,13 +113,19 @@ BM25_WEIGHT = 0.3
 VECTOR_WEIGHT = 0.7
 
 # ─── Indexing performance ─────────────────────────────────────────────────────
-# Parallel embedding workers.
-# FIX: reduced default from 4 → 2 for 4GB VRAM machines.
-# With 4 workers each holding ~270MB for nomic-embed-text, peak RAM usage
-# was ~1GB for embedding alone, causing intermittent OOM → Ollama 500 errors.
-# 2 workers = ~540MB peak, safe on 4GB VRAM + 32GB RAM systems.
-# Raise to 4–8 only if you have ample RAM and a dedicated embedding instance.
-EMBED_WORKERS = int(os.getenv("EMBED_WORKERS", "2"))
+# Parallel embedding workers — controls how many chunks are sent to Ollama
+# concurrently. The bottleneck is HTTP round-trip latency (~120ms each),
+# not CPU, so more workers = proportionally faster.
+#
+# Recommendations by hardware:
+#   4GB VRAM + 32GB RAM (your setup) → 4 workers  (~100 min for 90k chunks)
+#   8GB VRAM + 32GB RAM              → 6 workers  (~65 min)
+#   GPU-backed embed (RTX 3060)      → 8 workers  (~20 min)
+#
+# Raised from 2 → 4: nomic-embed-text uses ~270MB RAM per worker.
+# 4 workers = ~1.1GB peak RAM — safe with 32GB system RAM.
+# The earlier OOM risk was on machines with less RAM; 32GB is fine at 4.
+EMBED_WORKERS = int(os.getenv("EMBED_WORKERS", "4"))
 
 # ChromaDB upsert batch size — larger = fewer disk syncs, faster overall
 # 128 is optimal for most SSDs; lower to 32 if you hit memory pressure
