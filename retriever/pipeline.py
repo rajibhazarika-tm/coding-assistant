@@ -229,10 +229,14 @@ def grep_matches_to_chunks(
     """
     Convert grep matches into RetrievedChunks by reading window lines
     around each match from disk.
+
+    Multiple grep terms may match lines in the same window of the same file.
+    We deduplicate by (file, window_start) so each code region only appears
+    once — the chunk with the highest score (first match) is kept.
     """
     root = Path(repo_root) if repo_root else _find_repo_root() or Path.cwd()
-    chunks: list[RetrievedChunk] = []
     seen_files: dict[str, list[str]] = {}
+    seen_windows: dict[str, RetrievedChunk] = {}   # key: "fp:window_start"
 
     for m in matches:
         fp = m.file_path
@@ -240,7 +244,6 @@ def grep_matches_to_chunks(
         if not abs_path.exists():
             continue
 
-        # Cache file lines
         if fp not in seen_files:
             try:
                 seen_files[fp] = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -250,23 +253,34 @@ def grep_matches_to_chunks(
         file_lines = seen_files[fp]
         start = max(0, m.line_number - 1 - window // 2)
         end   = min(len(file_lines), m.line_number - 1 + window // 2)
-        snippet = "\n".join(file_lines[start:end])
 
+        window_key = f"{fp}:{start}"
+        if window_key in seen_windows:
+            # Accumulate terms on the existing chunk rather than duplicating
+            existing = seen_windows[window_key]
+            if m.term not in existing.name:
+                existing.name = f"{existing.name},{m.term}"
+                existing.context_header = f"grep:{existing.name}"
+            continue
+
+        snippet = "\n".join(file_lines[start:end])
         ext = abs_path.suffix.lower()
         lang_map = {".py":"python",".java":"java",".js":"javascript",
                     ".ts":"typescript",".go":"go",".rs":"rust",".kt":"kotlin",
                     ".cs":"c_sharp",".rb":"ruby",".cpp":"cpp",".c":"c"}
         lang = lang_map.get(ext, "text")
 
+        # ID includes window_start to be unique per code region
         chunk_id = f"{fp}:{start+1}-{end}:grep"
-        chunks.append(RetrievedChunk(
+        chunk = RetrievedChunk(
             id=chunk_id, content=snippet, file_path=fp, language=lang,
             start_line=start + 1, end_line=end,
             chunk_type="grep_match", name=m.term,
-            context_header=f"grep:{m.term}", score=1.2,  # boosted — exact match
-        ))
+            context_header=f"grep:{m.term}", score=1.2,
+        )
+        seen_windows[window_key] = chunk
 
-    return chunks
+    return list(seen_windows.values())
 
 
 # ── Step 3: Semantic search (existing pipeline) ───────────────────────────────
