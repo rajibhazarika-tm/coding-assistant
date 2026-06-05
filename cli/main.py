@@ -43,10 +43,20 @@ def cmd_index(args):
 
 
 def _index_single_path(repo_path: Path, profile_name: str, force: bool, dry_run: bool = False) -> int:
+    import signal
     from indexer.scanner import scan_repo, repo_id_for_path
     from indexer.chunker import chunk_file
-    from indexer.embedder import index_chunks, delete_chunks_for_files, delete_chunks_for_repo
+    from indexer.embedder import index_chunks, delete_chunks_for_files, delete_chunks_for_repo, request_cancel
     from indexer.strategy import get_profile
+
+    # On Ctrl+C: set cancel flag so the embed pool stops cleanly,
+    # then saves partial progress before exiting.
+    original_sigint = signal.getsignal(signal.SIGINT)
+    def _handle_sigint(sig, frame):
+        print("\n\n⚠️  Ctrl+C received — stopping after current batch. Progress will be saved.")
+        request_cancel()
+        signal.signal(signal.SIGINT, original_sigint)  # restore so second Ctrl+C force-exits
+    signal.signal(signal.SIGINT, _handle_sigint)
 
     profile = get_profile(profile_name)
     print(f"\nIndexing: {repo_path}")

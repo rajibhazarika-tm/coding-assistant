@@ -454,6 +454,11 @@ class App(ctk.CTk):
                                          font=ctk.CTkFont("Segoe UI Semibold", 13),
                                          command=self._run_index)
         self._index_btn.grid(row=0, column=2)
+        self._index_stop_btn = ctk.CTkButton(opts, text="⏹  Stop",
+                                              fg_color=C["red"], hover_color="#dc2626",
+                                              font=ctk.CTkFont("Segoe UI Semibold", 13),
+                                              command=self._stop_index, state="disabled")
+        self._index_stop_btn.grid(row=0, column=3, padx=(8, 0))
 
         # Progress
         prog = ctk.CTkFrame(p, fg_color=C["bg2"], corner_radius=8)
@@ -490,6 +495,7 @@ class App(ctk.CTk):
             return
         self._indexing = True
         self._index_btn.configure(state="disabled", text="⏳ Indexing…")
+        self._index_stop_btn.configure(state="normal")
         self._index_pbar.set(0)
         self._append_log(self._index_log, f"Starting index: {path}\n")
 
@@ -501,8 +507,10 @@ class App(ctk.CTk):
                 sys.path.insert(0, str(Path(__file__).parent))
                 from indexer.scanner import scan_repo, repo_id_for_path
                 from indexer.chunker import chunk_file
-                from indexer.embedder import index_chunks, delete_chunks_for_files, delete_chunks_for_repo
+                from indexer.embedder import (index_chunks, delete_chunks_for_files,
+                                               delete_chunks_for_repo, request_cancel, reset_cancel)
                 from indexer.strategy import analyze_repo, get_profile
+                reset_cancel()  # clear any previous cancel
 
                 repo_path = Path(path)
                 repo_id = repo_id_for_path(repo_path)
@@ -568,6 +576,16 @@ class App(ctk.CTk):
                 self._stream_queue.put(("index_done", ""))
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _stop_index(self):
+        """Request cancel — embed workers finish current request then stop."""
+        try:
+            from indexer.embedder import request_cancel
+            request_cancel()
+        except Exception:
+            pass
+        self._index_stop_btn.configure(state="disabled")
+        self._append_log(self._index_log, "⚠️  Stop requested — saving progress...\n")
 
     # ── Review panel ──────────────────────────────────────────────────────────
     def _build_review_panel(self):
@@ -929,6 +947,7 @@ class App(ctk.CTk):
                     self._index_pbar.set(1.0)
                     self._index_plabel.configure(text=item[1])
                     self._index_btn.configure(state="normal", text="▶  Start Indexing")
+                    self._index_stop_btn.configure(state="disabled")
                     self._indexing = False
                     self._poll_status()
 

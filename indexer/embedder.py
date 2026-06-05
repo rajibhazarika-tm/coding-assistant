@@ -73,6 +73,23 @@ def _embed_one(text: str, retries: int = 3) -> list[float]:
     raise RuntimeError("unreachable")
 
 
+# Global cancel flag — set to True to stop embedding workers cleanly.
+# Checked by _embed_one on each retry and by _embed_parallel's result loop.
+_cancel_requested = False
+
+
+def request_cancel() -> None:
+    """Signal all embedding workers to stop after their current request."""
+    global _cancel_requested
+    _cancel_requested = True
+
+
+def reset_cancel() -> None:
+    """Clear the cancel flag before starting a new indexing run."""
+    global _cancel_requested
+    _cancel_requested = False
+
+
 def _embed_parallel(
     texts: list[str],
     workers: int = EMBED_WORKERS,
@@ -81,23 +98,42 @@ def _embed_parallel(
     """
     Embed texts in parallel using a thread pool.
 
-    Ollama handles concurrent /api/embeddings requests fine — each runs
-    in its own goroutine on the server side. With 4–8 workers we saturate
-    the CPU embedding model without overloading it.
+    Ctrl+C / KeyboardInterrupt sets _cancel_requested=True, which causes:
+    1. The result-collection loop to break immediately
+    2. pool.shutdown(wait=False, cancel_futures=True) to drop queued work
+    3. index_chunks to save what it has so far (resume picks up remainder)
 
-    Returns embeddings in the same order as input texts.
+    Returns however many embeddings completed before cancellation.
+    Incomplete slots remain as empty lists — index_chunks filters them out.
     """
+    global _cancel_requested
     results: list[list[float]] = [[] for _ in texts]
     done = 0
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = {pool.submit(_embed_one, text): idx for idx, text in enumerate(texts)}
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_embed_one, text): idx for idx, text in enumerate(texts)}
+    try:
         for future in as_completed(futures):
+            if _cancel_requested:
+                break
             idx = futures[future]
-            results[idx] = future.result()
+            try:
+                results[idx] = future.result()
+            except Exception:
+                results[idx] = []
             done += 1
             if on_progress:
                 on_progress(done, len(texts))
+    except KeyboardInterrupt:
+        _cancel_requested = True
+    finally:
+        # cancel_futures=True drops anything not yet started (Python 3.9+)
+        # wait=False means we don't block waiting for in-flight requests
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    if _cancel_requested and done < len(texts):
+        print(f"\n   ⚠️  Cancelled after {done}/{len(texts)} embeddings."
+              f" Progress saved — restart to resume from here.")
 
     return results
 
@@ -188,6 +224,8 @@ def index_chunks(
             if on_progress:
                 on_progress(done, n, eta_str)
 
+    reset_cancel()  # clear any previous cancel before starting
+
     all_texts = [c.embedding_text for c in chunks]
     try:
         all_embeddings = _embed_parallel(all_texts, on_progress=_embed_progress)
@@ -195,16 +233,28 @@ def index_chunks(
         print(f"\n   ❌ Embedding failed: {e}")
         return 0
 
+    # Filter out slots that didn't complete (cancelled or errored)
+    completed = [(c, emb) for c, emb in zip(chunks, all_embeddings) if emb]
+    n_completed = len(completed)
+    n_skipped   = total - n_completed
+
     if show_progress:
         elapsed = time.perf_counter() - t_start
-        rate = total / elapsed if elapsed > 0 else 0
-        print(f"\n   ✅ Embedded {total} chunks in {elapsed:.1f}s  ({rate:.1f}/s)")
+        rate = n_completed / elapsed if elapsed > 0 else 0
+        status = "Cancelled" if _cancel_requested else "Embedded"
+        print(f"\n   ✅ {status} {n_completed}/{total} chunks in {elapsed:.1f}s  ({rate:.1f}/s)")
+        if n_skipped:
+            print(f"   ℹ️  {n_skipped} chunks skipped — restart to resume (they'll be detected automatically)")
 
-    # ── Step 2: upsert into ChromaDB in large batches ─────────────────────────
+    if not completed:
+        return 0
+
+    # ── Step 2: upsert into ChromaDB whatever completed ───────────────────────
     t_db = time.perf_counter()
-    for i in range(0, total, CHROMA_BATCH_SIZE):
-        batch = chunks[i: i + CHROMA_BATCH_SIZE]
-        embs  = all_embeddings[i: i + CHROMA_BATCH_SIZE]
+    for i in range(0, n_completed, CHROMA_BATCH_SIZE):
+        batch_pairs = completed[i: i + CHROMA_BATCH_SIZE]
+        batch = [c for c, _ in batch_pairs]
+        embs  = [e for _, e in batch_pairs]
         try:
             collection.upsert(
                 ids=[c.id for c in batch],
