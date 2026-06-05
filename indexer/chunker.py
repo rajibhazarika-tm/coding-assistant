@@ -44,15 +44,36 @@ class CodeChunk:
         base = f"{self.file_path}:{self.start_line}-{self.end_line}"
         return f"{self.repo_id}:{base}" if self.repo_id else base
 
+    # Maximum characters sent to the embedding model.
+    # nomic-embed-text supports 8192 tokens (~32k chars) but Ollama's default
+    # num_ctx is 2048 (~8k chars). We cap at 6000 chars (~1500 tokens) so we
+    # stay safely within the default AND the explicit num_ctx=8192 we now pass.
+    # This only affects the embedding input — the full chunk content is still
+    # stored in ChromaDB and sent to the LLM unchanged.
+    EMBED_MAX_CHARS: int = 6000
+
     @property
     def embedding_text(self) -> str:
-        """Text to embed: context header + code for better retrieval."""
+        """Text sent to the embedding model.
+
+        Truncated to EMBED_MAX_CHARS to prevent Ollama 500 errors caused by
+        nomic-embed-text context overflow on long chunks (intermittent with
+        50-line chunks containing verbose Java/Kotlin identifiers or long paths).
+        """
         parts = []
         if self.context_header:
             parts.append(f"# {self.context_header}")
-        parts.append(f"# File: {self.file_path}")
+        # Use only the last 3 path components to keep path tokens short
+        short_path = "/".join(Path(self.file_path).parts[-3:])
+        parts.append(f"# {short_path}")
         parts.append(self.content)
-        return "\n".join(parts)
+        full = "\n".join(parts)
+        if len(full) <= self.EMBED_MAX_CHARS:
+            return full
+        # Truncate content, not metadata — keep header + path, cut from end of code
+        meta = "\n".join(parts[:2]) + "\n"
+        max_content = self.EMBED_MAX_CHARS - len(meta)
+        return meta + self.content[:max_content]
 
 
 # ─── tree-sitter node types that represent top-level declarations ─────────────

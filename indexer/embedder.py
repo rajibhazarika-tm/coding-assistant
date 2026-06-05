@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from config.settings import (
     OLLAMA_BASE_URL, EMBED_MODEL, INDEX_DIR, CHROMA_COLLECTION,
-    EMBED_WORKERS, CHROMA_BATCH_SIZE,
+    EMBED_WORKERS, CHROMA_BATCH_SIZE, EMBED_NUM_CTX,
 )
 from indexer.chunker import CodeChunk
 
@@ -31,20 +31,45 @@ def _get_chroma_client():
 
 
 def _embed_one(text: str, retries: int = 3) -> list[float]:
-    """Embed a single text with exponential-backoff retry."""
+    """Embed a single text with exponential-backoff retry.
+
+    Three fixes for intermittent Ollama 500 errors with 50-line chunks:
+
+    FIX A — pass num_ctx=8192 explicitly: Ollama's default num_ctx for
+      nomic-embed-text is 2048 tokens. Long chunks with verbose Java/Kotlin
+      identifiers can silently overflow that, causing Ollama to kill the runner
+      and return HTTP 500. Setting num_ctx=8192 unlocks the model's full capacity.
+
+    FIX B — retry on HTTP 500/503: these are transient Ollama overload errors
+      (previously only network errors were retried, not HTTP error responses).
+
+    FIX C — longer timeout for large chunks under memory pressure: 30s was too
+      tight when 4 workers compete for the embedding model simultaneously.
+    """
     for attempt in range(retries):
         try:
             r = requests.post(
                 f"{OLLAMA_BASE_URL}/api/embeddings",
-                json={"model": EMBED_MODEL, "prompt": text},
-                timeout=30,
+                json={
+                    "model": EMBED_MODEL,
+                    "prompt": text,
+                    "options": {
+                        "num_ctx": EMBED_NUM_CTX,  # FIX A
+                    },
+                },
+                timeout=60,  # FIX C: was 30s
             )
+            # FIX B: retry on 500/503 (transient Ollama overload), not just network errors
+            if r.status_code in (500, 503):
+                raise requests.HTTPError(f"Ollama returned {r.status_code}: {r.text[:200]}", response=r)
             r.raise_for_status()
             return r.json()["embedding"]
         except requests.RequestException as exc:
             if attempt == retries - 1:
                 raise
-            time.sleep(2 ** attempt)
+            wait = 2 ** attempt  # 1s, 2s, 4s
+            print(f"   ↻ embed retry {attempt + 1}/{retries - 1} — {exc} (waiting {wait}s)")
+            time.sleep(wait)
     raise RuntimeError("unreachable")
 
 

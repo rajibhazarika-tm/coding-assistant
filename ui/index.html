@@ -283,6 +283,11 @@
           <input type="number" id="s-batch" min="8" max="512" />
           <span style="font-size:11px;color:var(--text3);">128 = optimal · lower if RAM constrained</span>
         </div>
+        <div class="field" style="grid-column:1/-1;">
+          <label>Embed Context Window (num_ctx)</label>
+          <input type="number" id="s-numctx" min="512" max="8192" step="512" />
+          <span style="font-size:11px;color:var(--text3);">8192 recommended · 2048 = Ollama default (causes 500 errors on long chunks)</span>
+        </div>
       </div>
     </div>
     <div style="display:flex;gap:8px;">
@@ -550,6 +555,7 @@ async function loadSettings() {
   document.getElementById('s-maxtok').value = d.llm_max_tokens;
   document.getElementById('s-workers').value = d.embed_workers;
   document.getElementById('s-batch').value = d.chroma_batch_size;
+  document.getElementById('s-numctx').value = d.embed_num_ctx;
 }
 loadSettings();
 
@@ -565,6 +571,7 @@ async function saveSettings() {
     llm_max_tokens: parseInt(document.getElementById('s-maxtok').value),
     embed_workers: parseInt(document.getElementById('s-workers').value),
     chroma_batch_size: parseInt(document.getElementById('s-batch').value),
+    embed_num_ctx: parseInt(document.getElementById('s-numctx').value),
   };
   await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
   const saved = document.getElementById('settings-saved');

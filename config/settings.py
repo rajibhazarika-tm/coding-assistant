@@ -113,13 +113,24 @@ BM25_WEIGHT = 0.3
 VECTOR_WEIGHT = 0.7
 
 # ─── Indexing performance ─────────────────────────────────────────────────────
-# Parallel embedding workers — 4 is safe for most machines; raise to 8 if you
-# have a fast CPU or a GPU-backed nomic-embed-text instance
-EMBED_WORKERS = int(os.getenv("EMBED_WORKERS", "4"))
+# Parallel embedding workers.
+# FIX: reduced default from 4 → 2 for 4GB VRAM machines.
+# With 4 workers each holding ~270MB for nomic-embed-text, peak RAM usage
+# was ~1GB for embedding alone, causing intermittent OOM → Ollama 500 errors.
+# 2 workers = ~540MB peak, safe on 4GB VRAM + 32GB RAM systems.
+# Raise to 4–8 only if you have ample RAM and a dedicated embedding instance.
+EMBED_WORKERS = int(os.getenv("EMBED_WORKERS", "2"))
 
 # ChromaDB upsert batch size — larger = fewer disk syncs, faster overall
 # 128 is optimal for most SSDs; lower to 32 if you hit memory pressure
 CHROMA_BATCH_SIZE = int(os.getenv("CHROMA_BATCH_SIZE", "128"))
+
+# Embedding model context window sent to Ollama.
+# nomic-embed-text supports 8192 tokens but Ollama defaults to 2048.
+# 50-line chunks with verbose Java identifiers can exceed 2048 tokens,
+# causing intermittent HTTP 500 "llama runner process has terminated".
+# Setting this explicitly to 8192 prevents that error entirely.
+EMBED_NUM_CTX = int(os.getenv("EMBED_NUM_CTX", "8192"))
 
 # ─── LLM Generation ───────────────────────────────────────────────────────────
 LLM_TEMPERATURE = 0.1       # Low temperature for deterministic code output
