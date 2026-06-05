@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Coding Assistant</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1117; --bg2: #1a1d27; --bg3: #232636; --bg4: #2d3148;
+    --border: #2e3250; --text: #e2e8f0; --text2: #94a3b8; --text3: #64748b;
+    --accent: #6366f1; --accent2: #818cf8; --green: #10b981; --red: #ef4444;
+    --yellow: #f59e0b; --radius: 8px; --sidebar: 220px;
+  }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 'Inter', system-ui, sans-serif; display: flex; height: 100vh; overflow: hidden; }
+  /* Sidebar */
+  #sidebar { width: var(--sidebar); background: var(--bg2); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+  .logo { padding: 18px 16px 12px; font-size: 15px; font-weight: 600; color: var(--accent2); display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  .logo span { font-size: 20px; }
+  nav { padding: 10px 8px; flex: 1; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--radius); cursor: pointer; color: var(--text2); font-size: 13px; transition: all .15s; margin-bottom: 2px; }
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active { background: var(--bg4); color: var(--accent2); }
+  .nav-icon { width: 16px; text-align: center; }
+  .status-bar { padding: 12px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text3); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  .dot.ok { background: var(--green); } .dot.err { background: var(--red); } .dot.warn { background: var(--yellow); }
+  /* Main */
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { height: 52px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 20px; gap: 12px; background: var(--bg2); flex-shrink: 0; }
+  .topbar h1 { font-size: 15px; font-weight: 600; }
+  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--bg4); color: var(--text2); }
+  /* Panels */
+  .panel { flex: 1; overflow-y: auto; padding: 20px; display: none; flex-direction: column; gap: 16px; }
+  .panel.active { display: flex; }
+  /* Cards */
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .card-title { font-size: 12px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; }
+  /* Inputs */
+  input[type=text], input[type=number], input[type=url], textarea, select {
+    width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); padding: 8px 12px; font: inherit; outline: none; transition: border .15s;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 80px; }
+  .input-row { display: flex; gap: 8px; }
+  .input-row input, .input-row select { flex: 1; }
+  /* Buttons */
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 8px 16px; font: inherit; font-size: 13px; transition: all .15s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent2); }
+  .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-ghost { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--bg4); color: var(--text); }
+  .btn-danger { background: var(--red); color: #fff; }
+  /* Output */
+  .output { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; min-height: 80px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; font-family: inherit; }
+  .output.code { font-family: 'Fira Code', monospace; font-size: 12px; }
+  .output .thinking { color: var(--text3); font-style: italic; }
+  .markdown-body { line-height: 1.7; }
+  .markdown-body pre { background: #1e2030; border-radius: 6px; padding: 12px; overflow-x: auto; margin: 8px 0; }
+  .markdown-body code { font-family: 'Fira Code', monospace; font-size: 12px; }
+  .markdown-body p { margin: 6px 0; }
+  .markdown-body h3 { color: var(--accent2); margin: 12px 0 6px; font-size: 14px; }
+  .markdown-body ul, .markdown-body ol { padding-left: 20px; }
+  /* Sources */
+  .sources { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .source-chip { background: var(--bg4); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 11px; font-family: monospace; color: var(--accent2); }
+  /* Progress */
+  .progress-bar-wrap { background: var(--bg4); border-radius: 99px; height: 6px; overflow: hidden; margin: 6px 0; }
+  .progress-bar { background: var(--accent); height: 6px; border-radius: 99px; transition: width .3s; }
+  .progress-label { font-size: 12px; color: var(--text2); }
+  /* Chat */
+  #chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 16px; min-height: 0; }
+  .msg { display: flex; gap: 10px; max-width: 85%; }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg-bubble { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+  .msg.user .msg-bubble { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .msg-avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--bg4); display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; margin-top: 2px; }
+  #chat-input-area { border-top: 1px solid var(--border); padding: 12px 16px; display: flex; gap: 8px; background: var(--bg2); flex-shrink: 0; }
+  #chat-input { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 10px 14px; font: inherit; outline: none; resize: none; height: 44px; max-height: 150px; overflow-y: auto; }
+  #chat-input:focus { border-color: var(--accent); }
+  /* Settings grid */
+  .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 12px; color: var(--text2); }
+  /* Tabs */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+  .tab { padding: 8px 14px; font-size: 13px; cursor: pointer; color: var(--text2); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab.active { color: var(--accent2); border-bottom-color: var(--accent2); }
+  /* Index log */
+  #index-log { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; color: var(--text2); }
+  #index-log .log-ok { color: var(--green); }
+  #index-log .log-err { color: var(--red); }
+  #index-log .log-info { color: var(--accent2); }
+  /* Scroll */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+  /* Spinner */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; }
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <div class="logo"><span>🤖</span> CodingAssist</div>
+  <nav>
+    <div class="nav-item active" onclick="showPanel('chat')" id="nav-chat"><span class="nav-icon">💬</span> Chat</div>
+    <div class="nav-item" onclick="showPanel('ask')" id="nav-ask"><span class="nav-icon">🔍</span> Ask</div>
+    <div class="nav-item" onclick="showPanel('index')" id="nav-index"><span class="nav-icon">📦</span> Index Repo</div>
+    <div class="nav-item" onclick="showPanel('review')" id="nav-review"><span class="nav-icon">🔬</span> Review File</div>
+    <div class="nav-item" onclick="showPanel('explain')" id="nav-explain"><span class="nav-icon">📖</span> Explain</div>
+    <div class="nav-item" onclick="showPanel('generate')" id="nav-generate"><span class="nav-icon">⚙️</span> Generate</div>
+    <div class="nav-item" onclick="showPanel('settings')" id="nav-settings"><span class="nav-icon">⚙️</span> Settings</div>
+  </nav>
+  <div class="status-bar" id="status-bar">
+    <div id="ollama-status"><span class="dot warn"></span>Checking...</div>
+    <div id="index-status" style="margin-top:4px;"></div>
+  </div>
+</aside>
+
+<div id="main">
+  <div class="topbar">
+    <h1 id="panel-title">Chat</h1>
+    <div class="topbar-right">
+      <span class="badge" id="model-badge">qwen2.5-coder:7b</span>
+      <span class="badge" id="chunks-badge">0 chunks</span>
+    </div>
+  </div>
+
+  <!-- CHAT -->
+  <div class="panel active" id="panel-chat" style="padding:0;gap:0;">
+    <div id="chat-messages">
+      <div class="msg">
+        <div class="msg-avatar">🤖</div>
+        <div class="msg-bubble markdown-body">Hello! I'm your coding assistant. Index a repo first, then ask me anything about your codebase — flows, errors, explanations, code generation.</div>
+      </div>
+    </div>
+    <div id="chat-input-area">
+      <textarea id="chat-input" placeholder="Ask about your codebase..." onkeydown="chatKeydown(event)"></textarea>
+      <button class="btn-primary" onclick="sendChat()" id="chat-btn">Send</button>
+    </div>
+  </div>
+
+  <!-- ASK -->
+  <div class="panel" id="panel-ask">
+    <div class="card">
+      <div class="card-title">Ask a Question</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <textarea id="ask-input" placeholder="e.g. How does authentication work? Explain the order flow. What causes the NullPointerException at OrderService:87?" style="min-height:100px;"></textarea>
+        <div class="input-row">
+          <select id="ask-lang">
+            <option value="">All languages</option>
+            <option value="java">Java</option><option value="python">Python</option>
+            <option value="javascript">JavaScript</option><option value="typescript">TypeScript</option>
+            <option value="go">Go</option><option value="rust">Rust</option>
+          </select>
+          <input type="number" id="ask-topk" value="5" min="1" max="20" style="width:80px;" title="Top-K chunks" />
+          <button class="btn-primary" onclick="runAsk()" id="ask-btn">Ask</button>
+        </div>
+      </div>
+    </div>
+    <div class="card" id="ask-result-card" style="display:none;">
+      <div class="sources" id="ask-sources"></div>
+      <div class="output markdown-body" id="ask-output"></div>
+    </div>
+  </div>
+
+  <!-- INDEX -->
+  <div class="panel" id="panel-index">
+    <div class="card">
+      <div class="card-title">Index Repository</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div class="field">
+          <label>Repository path (absolute)</label>
+          <input type="text" id="index-path" placeholder="/home/user/projects/my-repo" />
+        </div>
+        <div class="input-row">
+          <label style="display:flex;align-items:center;gap:6px;color:var(--text2);font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="index-auto" checked /> Auto-detect profile
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;color:var(--text2);font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="index-force" /> Force full re-index
+          </label>
+          <button class="btn-primary" onclick="runIndex()" id="index-btn">Start Indexing</button>
+        </div>
+      </div>
+    </div>
+    <div class="card" id="index-progress-card" style="display:none;">
+      <div class="card-title" id="index-progress-title">Indexing...</div>
+      <div class="progress-bar-wrap"><div class="progress-bar" id="index-pbar" style="width:0%"></div></div>
+      <div class="progress-label" id="index-progress-label">Starting...</div>
+      <div id="index-log" style="margin-top:12px;"></div>
+    </div>
+    <div class="card" id="index-analysis-card" style="display:none;">
+      <div class="card-title">Detected Areas</div>
+      <div id="index-areas"></div>
+    </div>
+  </div>
+
+  <!-- REVIEW -->
+  <div class="panel" id="panel-review">
+    <div class="card">
+      <div class="card-title">Review File</div>
+      <div class="input-row">
+        <input type="text" id="review-path" placeholder="src/main/java/com/example/OrderService.java" />
+        <button class="btn-primary" onclick="runReview()" id="review-btn">Review</button>
+      </div>
+    </div>
+    <div class="card" id="review-result-card" style="display:none;">
+      <div class="sources" id="review-sources"></div>
+      <div class="output markdown-body" id="review-output"></div>
+    </div>
+  </div>
+
+  <!-- EXPLAIN -->
+  <div class="panel" id="panel-explain">
+    <div class="card">
+      <div class="card-title">Explain Code</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <input type="text" id="explain-file" placeholder="File path (optional): src/auth/AuthService.java" />
+        <input type="text" id="explain-fn" placeholder="Function/method name (optional): processOrder" />
+        <button class="btn-primary" onclick="runExplain()" id="explain-btn" style="align-self:flex-start;">Explain</button>
+      </div>
+    </div>
+    <div class="card" id="explain-result-card" style="display:none;">
+      <div class="sources" id="explain-sources"></div>
+      <div class="output markdown-body" id="explain-output"></div>
+    </div>
+  </div>
+
+  <!-- GENERATE -->
+  <div class="panel" id="panel-generate">
+    <div class="card">
+      <div class="card-title">Generate Code</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <textarea id="gen-input" style="min-height:100px;" placeholder="Describe what you want to generate, e.g.:&#10;- Add a REST endpoint to list all active users with pagination&#10;- Write a retry wrapper for the payment service&#10;- Create a JWT validation middleware"></textarea>
+        <button class="btn-primary" onclick="runGenerate()" id="gen-btn" style="align-self:flex-start;">Generate</button>
+      </div>
+    </div>
+    <div class="card" id="gen-result-card" style="display:none;">
+      <div class="sources" id="gen-sources"></div>
+      <div class="output markdown-body" id="gen-output"></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="panel" id="panel-settings">
+    <div class="card">
+      <div class="card-title">Model & API</div>
+      <div class="settings-grid">
+        <div class="field"><label>LLM Model</label><input type="text" id="s-model" placeholder="qwen2.5-coder:7b" /></div>
+        <div class="field"><label>Embed Model</label><input type="text" id="s-embed" placeholder="nomic-embed-text" /></div>
+        <div class="field" style="grid-column:1/-1;"><label>Ollama Base URL</label><input type="url" id="s-url" placeholder="http://localhost:11434" /></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Context & Memory</div>
+      <div class="settings-grid">
+        <div class="field"><label>Max Context Tokens</label><input type="number" id="s-ctx" /></div>
+        <div class="field"><label>Top-K Chunks</label><input type="number" id="s-topk" /></div>
+        <div class="field"><label>Chunk Max Lines</label><input type="number" id="s-chunk" /></div>
+        <div class="field"><label>LLM Temperature</label><input type="number" id="s-temp" step="0.05" min="0" max="1" /></div>
+        <div class="field"><label>LLM Max Tokens</label><input type="number" id="s-maxtok" /></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Indexing Performance</div>
+      <div class="settings-grid">
+        <div class="field">
+          <label>Embed Workers (parallel threads)</label>
+          <input type="number" id="s-workers" min="1" max="16" />
+          <span style="font-size:11px;color:var(--text3);">4 = safe default · 8 = fast CPU/GPU</span>
+        </div>
+        <div class="field">
+          <label>ChromaDB Batch Size</label>
+          <input type="number" id="s-batch" min="8" max="512" />
+          <span style="font-size:11px;color:var(--text3);">128 = optimal · lower if RAM constrained</span>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn-primary" onclick="saveSettings()">Save Settings</button>
+      <button class="btn-ghost" onclick="loadSettings()">Reset</button>
+      <span id="settings-saved" style="color:var(--green);font-size:13px;align-self:center;display:none;">✓ Saved</span>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';  // same origin
+
+// ── Panel navigation ─────────────────────────────────────────────────────────
+const PANEL_TITLES = { chat:'Chat', ask:'Ask', index:'Index Repo',
+  review:'Review File', explain:'Explain', generate:'Generate Code', settings:'Settings' };
+
+function showPanel(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  document.getElementById('nav-' + name).classList.add('active');
+  document.getElementById('panel-title').textContent = PANEL_TITLES[name];
+}
+
+// ── Status polling ────────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const sb = document.getElementById('ollama-status');
+    sb.innerHTML = d.ollama_running
+      ? `<span class="dot ${d.model_available ? 'ok' : 'warn'}"></span>${d.model_available ? d.model : 'Model not pulled'}`
+      : `<span class="dot err"></span>Ollama offline`;
+    document.getElementById('index-status').textContent = `${d.index_chunks.toLocaleString()} chunks indexed`;
+    document.getElementById('model-badge').textContent = d.model;
+    document.getElementById('chunks-badge').textContent = d.index_chunks.toLocaleString() + ' chunks';
+  } catch {}
+  setTimeout(pollStatus, 8000);
+}
+pollStatus();
+
+// ── SSE helper ────────────────────────────────────────────────────────────────
+function streamSSE(url, body, onEvent) {
+  return fetch(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
+    .then(res => {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      function pump() {
+        return reader.read().then(({ done, value }) => {
+          if (done) return;
+          buf += dec.decode(value, { stream: true });
+          const parts = buf.split('\n\n');
+          buf = parts.pop();
+          for (const part of parts) {
+            const lines = part.split('\n');
+            let event = 'message', data = '';
+            for (const l of lines) {
+              if (l.startsWith('event: ')) event = l.slice(7);
+              if (l.startsWith('data: ')) data = l.slice(6);
+            }
+            try { onEvent(event, JSON.parse(data)); } catch {}
+          }
+          return pump();
+        });
+      }
+      return pump();
+    });
+}
+
+// ── Markdown render ────────────────────────────────────────────────────────────
+marked.setOptions({ breaks: true, gfm: true });
+function renderMarkdown(el, text) {
+  el.innerHTML = marked.parse(text);
+  el.querySelectorAll('pre code').forEach(b => hljs.highlightElement(b));
+}
+
+function showSources(el, files) {
+  el.innerHTML = files.map(f => `<span class="source-chip">${f.split('/').pop()}</span>`).join('');
+}
+
+// ── ASK ───────────────────────────────────────────────────────────────────────
+async function runAsk() {
+  const q = document.getElementById('ask-input').value.trim();
+  if (!q) return;
+  const btn = document.getElementById('ask-btn');
+  const card = document.getElementById('ask-result-card');
+  const out = document.getElementById('ask-output');
+  const src = document.getElementById('ask-sources');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  card.style.display = 'flex'; card.style.flexDirection = 'column';
+  out.innerHTML = '<span class="thinking">Searching codebase...</span>';
+  src.innerHTML = '';
+  let text = '';
+  await streamSSE('/api/ask/stream', {
+    question: q,
+    top_k: parseInt(document.getElementById('ask-topk').value) || 5,
+    language_filter: document.getElementById('ask-lang').value || null,
+  }, (event, data) => {
+    if (data.type === 'sources') showSources(src, data.files);
+    if (data.type === 'token') { text += data.text; renderMarkdown(out, text); }
+    if (data.type === 'done') { btn.disabled = false; btn.textContent = 'Ask'; pollStatus(); }
+  });
+}
+
+// ── INDEX ─────────────────────────────────────────────────────────────────────
+async function runIndex() {
+  const path = document.getElementById('index-path').value.trim();
+  if (!path) return alert('Please enter a repository path');
+  const btn = document.getElementById('index-btn');
+  const pc = document.getElementById('index-progress-card');
+  const ac = document.getElementById('index-analysis-card');
+  const log = document.getElementById('index-log');
+  const pbar = document.getElementById('index-pbar');
+  const plabel = document.getElementById('index-progress-label');
+
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Indexing';
+  pc.style.display = 'block'; ac.style.display = 'none';
+  log.innerHTML = ''; pbar.style.width = '0%';
+
+  function addLog(msg, cls='') {
+    log.innerHTML += `<div class="${cls}">${msg}</div>`;
+    log.scrollTop = log.scrollHeight;
+  }
+
+  await streamSSE('/api/index/stream', {
+    path, force: document.getElementById('index-force').checked,
+    auto: document.getElementById('index-auto').checked,
+  }, (event, data) => {
+    if (event === 'status') { plabel.textContent = data.message; addLog(data.message, 'log-info'); }
+    if (event === 'analysis') {
+      ac.style.display = 'block';
+      document.getElementById('index-areas').innerHTML = data.areas.map(a =>
+        `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+          <b>${a.path.split('/').pop()}/</b> → <span style="color:var(--accent2)">${a.profile}</span>
+          <span style="color:var(--text3);float:right">~${a.files.toLocaleString()} files</span>
+        </div>`).join('');
+    }
+    if (event === 'scan_done') addLog(`✓ Scanned: ${data.files} files, ${data.deleted} deleted`, 'log-ok');
+    if (event === 'chunk_done') addLog(`✓ Chunked: ${data.chunks} chunks`, 'log-ok');
+    if (event === 'index_progress') {
+      const pct = Math.round(data.indexed / data.total * 100);
+      pbar.style.width = pct + '%';
+      plabel.textContent = `Embedding ${data.indexed.toLocaleString()}/${data.total.toLocaleString()} chunks — ETA ${data.eta}`;
+    }
+    if (event === 'area_done') addLog(`✓ ${data.area}: ${data.indexed} chunks indexed`, 'log-ok');
+    if (event === 'done') {
+      pbar.style.width = '100%';
+      plabel.textContent = `Done — ${data.total_indexed.toLocaleString()} chunks indexed`;
+      addLog(`✅ Complete: ${data.total_indexed} chunks`, 'log-ok');
+      btn.disabled = false; btn.textContent = 'Start Indexing';
+      pollStatus();
+    }
+    if (event === 'error') { addLog('❌ ' + data.message, 'log-err'); btn.disabled = false; btn.textContent = 'Start Indexing'; }
+  });
+}
+
+// ── REVIEW ────────────────────────────────────────────────────────────────────
+async function runReview() {
+  const fp = document.getElementById('review-path').value.trim();
+  if (!fp) return;
+  const btn = document.getElementById('review-btn');
+  const card = document.getElementById('review-result-card');
+  const out = document.getElementById('review-output');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  card.style.display = 'flex'; card.style.flexDirection = 'column';
+  out.innerHTML = '<span class="thinking">Reviewing...</span>';
+  document.getElementById('review-sources').innerHTML = '';
+  let text = '';
+  await streamSSE('/api/review/stream', { file_path: fp }, (event, data) => {
+    if (data.type === 'sources') showSources(document.getElementById('review-sources'), data.files);
+    if (data.type === 'token') { text += data.text; renderMarkdown(out, text); }
+    if (data.type === 'done') { btn.disabled = false; btn.textContent = 'Review'; }
+  });
+}
+
+// ── EXPLAIN ───────────────────────────────────────────────────────────────────
+async function runExplain() {
+  const fp = document.getElementById('explain-file').value.trim();
+  const fn = document.getElementById('explain-fn').value.trim();
+  if (!fp && !fn) return alert('Provide a file or function name');
+  const btn = document.getElementById('explain-btn');
+  const card = document.getElementById('explain-result-card');
+  const out = document.getElementById('explain-output');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  card.style.display = 'flex'; card.style.flexDirection = 'column';
+  out.innerHTML = '<span class="thinking">Explaining...</span>';
+  document.getElementById('explain-sources').innerHTML = '';
+  let text = '';
+  await streamSSE('/api/explain/stream', { file_path: fp || null, function_name: fn || null }, (event, data) => {
+    if (data.type === 'sources') showSources(document.getElementById('explain-sources'), data.files);
+    if (data.type === 'token') { text += data.text; renderMarkdown(out, text); }
+    if (data.type === 'done') { btn.disabled = false; btn.textContent = 'Explain'; }
+  });
+}
+
+// ── GENERATE ──────────────────────────────────────────────────────────────────
+async function runGenerate() {
+  const desc = document.getElementById('gen-input').value.trim();
+  if (!desc) return;
+  const btn = document.getElementById('gen-btn');
+  const card = document.getElementById('gen-result-card');
+  const out = document.getElementById('gen-output');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  card.style.display = 'flex'; card.style.flexDirection = 'column';
+  out.innerHTML = '<span class="thinking">Generating...</span>';
+  document.getElementById('gen-sources').innerHTML = '';
+  let text = '';
+  await streamSSE('/api/generate/stream', { description: desc }, (event, data) => {
+    if (data.type === 'sources') showSources(document.getElementById('gen-sources'), data.files);
+    if (data.type === 'token') { text += data.text; renderMarkdown(out, text); }
+    if (data.type === 'done') { btn.disabled = false; btn.textContent = 'Generate'; }
+  });
+}
+
+// ── CHAT ──────────────────────────────────────────────────────────────────────
+let chatHistory = [];
+
+function chatKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+
+  const msgs = document.getElementById('chat-messages');
+  msgs.innerHTML += `<div class="msg user"><div class="msg-avatar">👤</div><div class="msg-bubble">${q}</div></div>`;
+
+  const botDiv = document.createElement('div');
+  botDiv.className = 'msg';
+  botDiv.innerHTML = `<div class="msg-avatar">🤖</div><div class="msg-bubble markdown-body"><span class="thinking">Thinking...</span></div>`;
+  msgs.appendChild(botDiv);
+  msgs.scrollTop = msgs.scrollHeight;
+
+  const bubble = botDiv.querySelector('.msg-bubble');
+  const btn = document.getElementById('chat-btn');
+  btn.disabled = true;
+  let text = '';
+
+  await streamSSE('/api/chat/stream', { messages: chatHistory, question: q }, (event, data) => {
+    if (data.type === 'token') { text += data.text; renderMarkdown(bubble, text); msgs.scrollTop = msgs.scrollHeight; }
+    if (data.type === 'done') {
+      chatHistory.push({ role: 'user', content: q }, { role: 'assistant', content: text });
+      if (chatHistory.length > 24) chatHistory = chatHistory.slice(-24);
+      btn.disabled = false;
+    }
+  });
+}
+
+// ── SETTINGS ──────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  const r = await fetch('/api/settings');
+  const d = await r.json();
+  document.getElementById('s-model').value = d.model;
+  document.getElementById('s-embed').value = d.embed_model;
+  document.getElementById('s-url').value = d.ollama_base_url;
+  document.getElementById('s-ctx').value = d.max_context_tokens;
+  document.getElementById('s-topk').value = d.top_k_chunks;
+  document.getElementById('s-chunk').value = d.chunk_max_lines;
+  document.getElementById('s-temp').value = d.llm_temperature;
+  document.getElementById('s-maxtok').value = d.llm_max_tokens;
+  document.getElementById('s-workers').value = d.embed_workers;
+  document.getElementById('s-batch').value = d.chroma_batch_size;
+}
+loadSettings();
+
+async function saveSettings() {
+  const body = {
+    model: document.getElementById('s-model').value,
+    embed_model: document.getElementById('s-embed').value,
+    ollama_base_url: document.getElementById('s-url').value,
+    max_context_tokens: parseInt(document.getElementById('s-ctx').value),
+    top_k_chunks: parseInt(document.getElementById('s-topk').value),
+    chunk_max_lines: parseInt(document.getElementById('s-chunk').value),
+    llm_temperature: parseFloat(document.getElementById('s-temp').value),
+    llm_max_tokens: parseInt(document.getElementById('s-maxtok').value),
+    embed_workers: parseInt(document.getElementById('s-workers').value),
+    chroma_batch_size: parseInt(document.getElementById('s-batch').value),
+  };
+  await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const saved = document.getElementById('settings-saved');
+  saved.style.display = 'inline';
+  setTimeout(() => saved.style.display = 'none', 2000);
+  pollStatus();
+}
+</script>
+</body>
+</html>

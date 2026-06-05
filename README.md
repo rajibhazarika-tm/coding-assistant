@@ -1,168 +1,79 @@
-# 🤖 Local Coding Assistant
+# 🤖 Coding Assistant
 
-A smart, memory-efficient coding assistant that runs entirely locally using Ollama.
-Designed for **4GB VRAM / 32GB RAM** hardware constraints.
+A local AI coding assistant powered by [Ollama](https://ollama.com) + `qwen2.5-coder:7b`.  
+Runs entirely on your machine. No cloud. No API keys.
 
----
+## Features
 
-## 🧠 Model Recommendation
+- **Chat** — multi-turn conversation grounded in your codebase
+- **Ask** — single questions with hybrid BM25 + vector retrieval
+- **Index** — parallel embedding + large ChromaDB batches (4–8× faster than naive)
+- **Review** — AI code review citing file + line numbers
+- **Explain** — explain files, functions, or cross-cutting flows
+- **Generate** — generate code matching your codebase's style
+- **Web UI** — full browser interface with streaming responses
+- **Configurable** — all settings adjustable from the UI
 
-### Primary: `qwen2.5-coder:7b` (Q4_K_M quantization)
+## Hardware
 
-| Property | Value |
-|---|---|
-| Parameters | 7 Billion |
-| VRAM Required | ~4.1 GB (Q4_K_M) |
-| HumanEval Score | ~88% |
-| Context Window | 32K tokens |
-| License | Apache 2.0 (free, commercial OK) |
-| Best For | Code generation, review, explanation |
+Optimised for **4GB VRAM / 32GB RAM**. Tested on 72k-file enterprise repos.
+
+## Quick Start
 
 ```bash
-ollama pull qwen2.5-coder:7b
-```
-
-**Why this model?**
-- Fits entirely in your 4GB VRAM — no CPU offload, 5–10× faster inference
-- Outperforms CodeLlama 13B despite being half the size
-- Trained on 5.5 trillion tokens of code across 92+ languages
-- Supports fill-in-the-middle (FIM) for code completion
-
-### Fallback (even lighter): `qwen2.5-coder:3b`
-If 7B is too slow, the 3B variant needs only ~2GB VRAM:
-```bash
-ollama pull qwen2.5-coder:3b
-```
-
-### Embedding model (required for RAG):
-```bash
-ollama pull nomic-embed-text
-```
-
----
-
-## 🏗️ Architecture
-
-```
-Your Repo
-    │
-    ▼
-[1] SCANNER          — walks repo, respects .gitignore, detects languages
-    │
-    ▼
-[2] AST CHUNKER      — tree-sitter parses each file into semantic units
-    │  (functions, classes, methods — NOT arbitrary line splits)
-    │
-    ▼
-[3] INDEXER          — embeds chunks via nomic-embed-text + stores in ChromaDB
-    │  (incremental: only re-indexes changed files via file hashes)
-    │
-    ▼
-[4] RETRIEVER        — hybrid BM25 + vector search, returns top-k chunks
-    │  (re-ranks by recency + structural relevance)
-    │
-    ▼
-[5] CONTEXT BUILDER  — smart token budget: fits context in ~2048 tokens
-    │  (summary header + relevant chunks + file path metadata)
-    │
-    ▼
-[6] OLLAMA LLM       — qwen2.5-coder:7b answers with minimal, precise context
-```
-
----
-
-## 📦 Installation
-
-### 1. Install Ollama
-```bash
-# Linux/Mac
+# 1. Install Ollama and pull models
 curl -fsSL https://ollama.com/install.sh | sh
-
-# Windows: download from https://ollama.com/download
-```
-
-### 2. Pull models
-```bash
 ollama pull qwen2.5-coder:7b
 ollama pull nomic-embed-text
-```
 
-### 3. Set up Python environment
-```bash
+# 2. Install Python deps
+git clone https://github.com/rajibhazarika-tm/coding-assistant
 cd coding-assistant
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-```
 
-### 4. Index your repo
-```bash
-python -m cli.main index --path /path/to/your/repo
-```
+# 3. Start the UI
+python api.py
+# Open http://localhost:8000
 
-### 5. Start chatting
-```bash
+# 4. Or use the CLI
+python -m cli.main index --path /path/to/repo --auto
 python -m cli.main chat
 ```
 
----
+## CLI Commands
 
-## 🚀 Usage Examples
+| Command | Description |
+|---------|-------------|
+| `index --path <dir> --auto` | Index a repo (auto-detects Spring/frontend/generic) |
+| `ask "question"` | Ask with RAG context |
+| `chat` | Interactive multi-turn chat |
+| `review --file <path>` | Code review |
+| `explain --file <path> --function <name>` | Explain code |
+| `generate "description"` | Generate code |
+| `analyze --path <dir>` | Show indexing strategy without indexing |
+| `stats` | Show index statistics |
 
-```bash
-# Index a repository
-python -m cli.main index --path ~/projects/myapp
+## Performance (after fixes)
 
-# Ask a question
-python -m cli.main ask "How does authentication work in this codebase?"
+| Step | Time |
+|------|------|
+| Cold scan (72k files) | 10.5s |
+| AST chunking (72k files) | ~14s |
+| Embedding (parallel, 4 workers) | ~4× faster than sequential |
+| ChromaDB upsert (128-chunk batches) | ~6× fewer disk syncs |
+| Per-query overhead (BM25 cached) | <130ms |
 
-# Review a specific file
-python -m cli.main review --file src/auth/login.py
+## Configuration
 
-# Generate code
-python -m cli.main generate "Write a function to validate JWT tokens"
+All settings are configurable from the UI (`Settings` tab) or via environment variables:
 
-# Explain a function
-python -m cli.main explain --file src/utils.py --function parse_config
-
-# Interactive chat
-python -m cli.main chat
-```
-
----
-
-## ⚙️ Configuration
-
-Edit `config/settings.py` to tune for your hardware:
-
-```python
-MAX_CONTEXT_TOKENS = 2048    # Keep small for 4GB VRAM
-TOP_K_CHUNKS = 5             # Chunks retrieved per query
-CHUNK_MAX_LINES = 60         # Max lines per AST chunk
-MODEL = "qwen2.5-coder:7b"
-EMBED_MODEL = "nomic-embed-text"
-```
-
----
-
-## 🗂️ Project Structure
-
-```
-coding-assistant/
-├── indexer/
-│   ├── scanner.py       # Repo walker, .gitignore aware
-│   ├── chunker.py       # AST-based code chunker (tree-sitter)
-│   └── embedder.py      # Embedding + ChromaDB storage
-├── retriever/
-│   ├── hybrid_search.py # BM25 + vector hybrid retrieval
-│   └── context_builder.py # Token-budget-aware context assembly
-├── assistant/
-│   ├── llm.py           # Ollama API wrapper
-│   └── prompts.py       # Task-specific prompt templates
-├── cli/
-│   └── main.py          # CLI entry point
-├── config/
-│   └── settings.py      # All tuneable parameters
-├── requirements.txt
-└── README.md
-```
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `CODING_MODEL` | `qwen2.5-coder:7b` | LLM model |
+| `EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API URL |
+| `MAX_CONTEXT_TOKENS` | `2048` | Context window budget |
+| `TOP_K_CHUNKS` | `5` | Chunks retrieved per query |
+| `EMBED_WORKERS` | `4` | Parallel embedding threads |
+| `CHROMA_BATCH_SIZE` | `128` | ChromaDB upsert batch size |

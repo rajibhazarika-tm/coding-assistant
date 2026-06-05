@@ -112,6 +112,15 @@ MAX_FILE_SIZE_KB = 500
 BM25_WEIGHT = 0.3
 VECTOR_WEIGHT = 0.7
 
+# ─── Indexing performance ─────────────────────────────────────────────────────
+# Parallel embedding workers — 4 is safe for most machines; raise to 8 if you
+# have a fast CPU or a GPU-backed nomic-embed-text instance
+EMBED_WORKERS = int(os.getenv("EMBED_WORKERS", "4"))
+
+# ChromaDB upsert batch size — larger = fewer disk syncs, faster overall
+# 128 is optimal for most SSDs; lower to 32 if you hit memory pressure
+CHROMA_BATCH_SIZE = int(os.getenv("CHROMA_BATCH_SIZE", "128"))
+
 # ─── LLM Generation ───────────────────────────────────────────────────────────
 LLM_TEMPERATURE = 0.1       # Low temperature for deterministic code output
 LLM_MAX_TOKENS = 1024       # Enough for a function or review; keep short for speed
