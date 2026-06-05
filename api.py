@@ -30,6 +30,8 @@ class QueryRequest(BaseModel):
     question: str
     top_k: int = 5
     language_filter: Optional[str] = None
+    repo_root: Optional[str] = None   # for ripgrep; defaults to cwd
+    use_pipeline: bool = True          # False = legacy hybrid-only
 
 class ReviewRequest(BaseModel):
     file_path: str
@@ -242,21 +244,39 @@ async def index_stream(req: IndexRequest):
 @app.post("/api/ask/stream")
 async def ask_stream(req: QueryRequest):
     async def generate():
-        from retriever.hybrid_search import retrieve
-        from retriever.context_builder import build_context
         from assistant.prompts import build_prompt, build_no_context_prompt
         from assistant.llm import stream_response
-        import config.settings as s
 
-        chunks = retrieve(req.question, top_k=req.top_k, language_filter=req.language_filter)
-        if chunks:
-            context, sources = build_context(chunks, req.question)
-            system, user_msg = build_prompt("general", req.question, context, sources)
+        if req.use_pipeline:
+            from retriever.pipeline import run_pipeline
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: run_pipeline(
+                    req.question, repo_root=req.repo_root,
+                    top_k=req.top_k, language_filter=req.language_filter,
+                )
+            )
+            # Stream the pipeline trace first so UI can show it
+            yield f"data: {json.dumps({'type':'plan','plan':{'search_terms':result.plan.search_terms,'semantic_query':result.plan.semantic_query,'file_hints':result.plan.file_hints,'task':result.plan.task,'reasoning':result.plan.reasoning}})}\n\n"
+            yield f"data: {json.dumps({'type':'grep_hits','count':len(result.grep_chunks),'terms':result.plan.search_terms})}\n\n"
+            yield f"data: {json.dumps({'type':'semantic_hits','count':len(result.semantic_chunks)})}\n\n"
+            yield f"data: {json.dumps({'type':'final_chunks','chunks':[{'file':c.file_path,'lines':f'{c.start_line}-{c.end_line}','type':c.chunk_type,'name':c.name,'score':c.score,'source':'grep' if c.chunk_type=='grep_match' else 'semantic'} for c in result.final_chunks]})}\n\n"
+            yield f"data: {json.dumps({'type':'sources','files':result.sources})}\n\n"
+            yield f"data: {json.dumps({'type':'timings','timings':result.timings})}\n\n"
+            context, sources = result.context, result.sources
+            system, user_msg = build_prompt(result.plan.task, req.question, context, sources)
         else:
-            system, user_msg = build_no_context_prompt("general", req.question)
-            sources = []
+            from retriever.hybrid_search import retrieve
+            from retriever.context_builder import build_context
+            chunks = retrieve(req.question, top_k=req.top_k, language_filter=req.language_filter)
+            if chunks:
+                context, sources = build_context(chunks, req.question)
+                system, user_msg = build_prompt("general", req.question, context, sources)
+            else:
+                system, user_msg = build_no_context_prompt("general", req.question)
+                sources = []
+            yield f"data: {json.dumps({'type':'sources','files':sources})}\n\n"
 
-        yield f"data: {json.dumps({'type':'sources','files':sources})}\n\n"
         for token in stream_response(system, user_msg):
             yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
         yield f"data: {json.dumps({'type':'done'})}\n\n"

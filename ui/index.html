@@ -97,6 +97,17 @@
   #index-log .log-ok { color: var(--green); }
   #index-log .log-err { color: var(--red); }
   #index-log .log-info { color: var(--accent2); }
+  /* Pipeline trace */
+  .trace { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; font-size: 12px; font-family: monospace; margin-bottom: 10px; }
+  .trace-step { display: flex; align-items: flex-start; gap: 10px; padding: 5px 0; border-bottom: 0.5px solid var(--border); }
+  .trace-step:last-child { border-bottom: none; }
+  .step-num { background: var(--accent); color: #fff; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; margin-top: 1px; }
+  .step-num.done { background: var(--green); }
+  .step-body { flex: 1; }
+  .step-title { font-weight: 600; color: var(--text); font-size: 12px; }
+  .step-detail { color: var(--text3); font-size: 11px; margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
+  .chip { display: inline-block; background: var(--bg4); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 10px; font-family: monospace; margin: 1px; color: var(--accent2); }
+  .chip.grep { color: var(--green); } .chip.sem { color: var(--yellow); }
   /* Scroll */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -154,6 +165,12 @@
       <div class="card-title">Ask a Question</div>
       <div style="display:flex;flex-direction:column;gap:10px;">
         <textarea id="ask-input" placeholder="e.g. How does authentication work? Explain the order flow. What causes the NullPointerException at OrderService:87?" style="min-height:100px;"></textarea>
+        <div class="input-row" style="align-items:center;">
+          <label style="display:flex;align-items:center;gap:6px;color:var(--text2);font-size:13px;cursor:pointer;white-space:nowrap;">
+            <input type="checkbox" id="ask-pipeline" checked /> 🔍 Smart pipeline
+          </label>
+          <input type="text" id="ask-repo" placeholder="Repo path for grep (optional)" style="flex:2;" />
+        </div>
         <div class="input-row">
           <select id="ask-lang">
             <option value="">All languages</option>
@@ -166,7 +183,13 @@
         </div>
       </div>
     </div>
-    <div class="card" id="ask-result-card" style="display:none;">
+    <div class="card" id="ask-trace-card" style="display:none;margin-bottom:0;border-bottom:none;border-radius:var(--radius) var(--radius) 0 0;">
+      <div class="card-title" style="margin-bottom:8px;cursor:pointer;" onclick="toggleTrace()">
+        🔍 Retrieval pipeline <span id="trace-toggle" style="font-size:11px;color:var(--text3);">▼ hide</span>
+      </div>
+      <div id="trace-steps"></div>
+    </div>
+    <div class="card" id="ask-result-card" style="display:none;border-radius:0 0 var(--radius) var(--radius);border-top:none;">
       <div class="sources" id="ask-sources"></div>
       <div class="output markdown-body" id="ask-output"></div>
     </div>
@@ -371,23 +394,94 @@ function showSources(el, files) {
 }
 
 // ── ASK ───────────────────────────────────────────────────────────────────────
+let traceVisible = true;
+function toggleTrace() {
+  traceVisible = !traceVisible;
+  document.getElementById('trace-steps').style.display = traceVisible ? 'block' : 'none';
+  document.getElementById('trace-toggle').textContent = traceVisible ? '▼ hide' : '▶ show';
+}
+
+function traceStep(num, title, detail, chips, done) {
+  const steps = document.getElementById('trace-steps');
+  let el = document.getElementById('trace-step-' + num);
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'trace-step-' + num;
+    el.className = 'trace-step';
+    steps.appendChild(el);
+  }
+  const chipsHtml = (chips||[]).map(c => `<span class="chip ${c.type||''}">${c.label}</span>`).join('');
+  el.innerHTML = `<div class="step-num ${done?'done':''}">${num}</div>
+    <div class="step-body">
+      <div class="step-title">${title}</div>
+      ${detail ? `<div class="step-detail">${detail}</div>` : ''}
+      ${chipsHtml ? `<div style="margin-top:4px;">${chipsHtml}</div>` : ''}
+    </div>`;
+}
+
 async function runAsk() {
   const q = document.getElementById('ask-input').value.trim();
   if (!q) return;
+  const usePipeline = document.getElementById('ask-pipeline').checked;
   const btn = document.getElementById('ask-btn');
-  const card = document.getElementById('ask-result-card');
+  const resultCard = document.getElementById('ask-result-card');
+  const traceCard = document.getElementById('ask-trace-card');
   const out = document.getElementById('ask-output');
   const src = document.getElementById('ask-sources');
+
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
-  card.style.display = 'flex'; card.style.flexDirection = 'column';
+  resultCard.style.display = 'flex'; resultCard.style.flexDirection = 'column';
   out.innerHTML = '<span class="thinking">Searching codebase...</span>';
   src.innerHTML = '';
+
+  if (usePipeline) {
+    traceCard.style.display = 'block';
+    document.getElementById('trace-steps').innerHTML = '';
+    traceStep(1, 'Analysing query...', '', [], false);
+  } else {
+    traceCard.style.display = 'none';
+  }
+
   let text = '';
+  const repoRoot = document.getElementById('ask-repo').value.trim() || null;
+
   await streamSSE('/api/ask/stream', {
     question: q,
     top_k: parseInt(document.getElementById('ask-topk').value) || 5,
     language_filter: document.getElementById('ask-lang').value || null,
+    repo_root: repoRoot,
+    use_pipeline: usePipeline,
   }, (event, data) => {
+    if (data.type === 'plan') {
+      traceStep(1, 'Query analysis', data.plan.reasoning,
+        data.plan.search_terms.map(t => ({label: t, type:'grep'}))
+        .concat(data.plan.file_hints.map(h => ({label: '📁 '+h, type:''}))), true);
+      traceStep(2, 'Grep search...', `Looking for: ${data.plan.search_terms.join(', ')}`, [], false);
+    }
+    if (data.type === 'grep_hits') {
+      traceStep(2, `Grep / ripgrep`, `Found ${data.count} exact matches`,
+        data.terms.map(t => ({label: t, type:'grep'})), true);
+      traceStep(3, 'Semantic search...', data.plan ? data.plan.semantic_query : '', [], false);
+    }
+    if (data.type === 'semantic_hits') {
+      traceStep(3, `Semantic search`, `Found ${data.count} vector+BM25 matches`, [], true);
+      traceStep(4, 'Merging & deduplicating...', '', [], false);
+    }
+    if (data.type === 'final_chunks') {
+      traceStep(4, 'Merged & deduplicated', `${data.chunks.length} unique chunks`, [], true);
+      const chips = data.chunks.map(c => ({
+        label: `${c.file.split('/').pop()}:${c.lines} [${c.source}]`,
+        type: c.source === 'grep' ? 'grep' : 'sem'
+      }));
+      traceStep(5, 'Reranked — final context', '', chips, true);
+    }
+    if (data.type === 'timings') {
+      const t = data.timings;
+      const total = Object.values(t).reduce((a,b) => a+b, 0).toFixed(2);
+      const timing = Object.entries(t).map(([k,v]) => `${k}: ${v}s`).join(' · ');
+      const el = document.getElementById('trace-step-5');
+      if (el) el.querySelector('.step-detail').textContent = timing + ` · total: ${total}s`;
+    }
     if (data.type === 'sources') showSources(src, data.files);
     if (data.type === 'token') { text += data.text; renderMarkdown(out, text); }
     if (data.type === 'done') { btn.disabled = false; btn.textContent = 'Ask'; pollStatus(); }

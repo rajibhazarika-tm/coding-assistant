@@ -11,7 +11,13 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 python-dotenv>=1.0.0
 
+# Desktop window (Windows/macOS/Linux native)
+pywebview>=5.0.5
+
 # CLI
 rich>=13.0.0
+
+# Build to .exe (optional, Windows only)
+# pyinstaller>=6.5.0
 
 # Python >= 3.9 required (uses Path.is_relative_to)
