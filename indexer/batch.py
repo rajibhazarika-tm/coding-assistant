@@ -53,82 +53,68 @@ class BatchProgress:
 def discover_batches(
     repo_root: Path,
     profile,
-    min_batch_size: int = 10,     # merge tiny folders into a combined batch
-    max_depth: int = 2,            # how deep to look for subdirectories
+    min_batch_size: int = 10,     # unused, kept for API compat
+    max_depth: int = 2,            # unused, kept for API compat — now fully recursive
 ) -> list[Path]:
     """
     Return a list of folder paths to process as independent batches.
 
+    Walks the ENTIRE directory tree recursively (no depth limit).
+    Every directory that contains at least one supported file becomes
+    its own batch. This ensures no file at any nesting level is skipped.
+
+    Each batch covers only the FILES directly inside that folder
+    (not its subdirectories), so deeper folders get their own batch.
+
     Strategy:
-    - Walk up to max_depth levels looking for subdirectories
-    - Folders with fewer than min_batch_size supported files are merged
-      with the parent batch (avoids 1000 single-file batches)
-    - Always includes a root-level batch for top-level files
+    - Recurse into every non-skipped subdirectory, no depth limit
+    - A folder becomes a batch if it has ≥1 supported file directly inside
+    - Root-level files are always included as the first batch
+    - Subdirectories are sorted for deterministic ordering
     """
     allowed_exts = profile.include_extensions
     allowed_names = profile.include_filenames
     skip = set(SKIP_DIRS) | profile.extra_skip_dirs
-
-    def _count_files(folder: Path) -> int:
-        count = 0
-        for entry in folder.iterdir():
-            if entry.is_file():
-                if entry.suffix.lower() in allowed_exts or entry.name in allowed_names:
-                    count += 1
-        return count
-
-    def _subdirs(folder: Path, depth: int) -> list[Path]:
-        if depth == 0:
-            return []
-        result = []
-        try:
-            for entry in sorted(folder.iterdir()):
-                if not entry.is_dir():
-                    continue
-                if entry.name.startswith(".") or entry.name in skip:
-                    continue
-                result.append(entry)
-        except PermissionError:
-            pass
-        return result
-
-    # Start with immediate subdirectories of the repo root
-    top_dirs = _subdirs(repo_root, 1)
-
-    if not top_dirs:
-        # Flat repo — single batch
-        return [repo_root]
-
     batches: list[Path] = []
 
-    def _collect(folder: Path, depth: int):
-        """Recursively collect batch folders."""
-        sub_dirs = _subdirs(folder, depth)
-        file_count = _count_files(folder)
+    def _has_files(folder: Path) -> bool:
+        """Check if folder has any directly-contained supported files."""
+        try:
+            for entry in folder.iterdir():
+                if entry.is_file():
+                    if entry.suffix.lower() in allowed_exts or entry.name in allowed_names:
+                        return True
+        except PermissionError:
+            pass
+        return False
 
-        if not sub_dirs:
-            # Leaf directory — always a batch if it has any supported files
-            if file_count > 0:
-                batches.append(folder)
-            return
-
-        # Has subdirs — add this folder for its own top-level files,
-        # then recurse into children
-        if file_count > 0:
+    def _walk(folder: Path) -> None:
+        """
+        Recursively walk all directories without depth limit.
+        Add folder as a batch if it contains supported files directly.
+        Then recurse into every non-skipped subdirectory.
+        """
+        # This folder is a batch if it has supported files directly inside
+        if _has_files(folder):
             batches.append(folder)
 
-        for sd in sub_dirs:
-            _collect(sd, depth - 1)
+        # Recurse into all subdirectories
+        try:
+            subdirs = sorted(
+                e for e in folder.iterdir()
+                if e.is_dir()
+                and not e.name.startswith(".")
+                and e.name not in skip
+            )
+        except PermissionError:
+            return
 
-    for d in top_dirs:
-        _collect(d, max_depth - 1)
+        for sd in subdirs:
+            _walk(sd)
 
-    # Always add a root-level batch for files directly in repo_root
-    root_files = _count_files(repo_root)
-    if root_files > 0:
-        batches.insert(0, repo_root)
+    _walk(repo_root)
 
-    # Remove duplicates while preserving order
+    # Deduplicate while preserving order (shouldn't happen but be safe)
     seen: set[Path] = set()
     unique: list[Path] = []
     for b in batches:
@@ -146,14 +132,18 @@ def index_in_batches(
     force: bool = False,
     on_progress: Optional[Callable[[BatchProgress], None]] = None,
     on_log: Optional[Callable[[str], None]] = None,
-    depth: int = 2,
+    depth: int = 0,   # kept for API compat — discover_batches is now fully recursive
 ) -> int:
     """
-    Index a repository subfolder by subfolder.
+    Index a repository subfolder by subfolder, at ALL nesting levels.
+
+    discover_batches() walks the complete directory tree with no depth
+    limit, so every folder containing supported files becomes its own
+    batch — whether it is 2 levels or 20 levels deep.
 
     Each folder is fully scanned, chunked, embedded, and stored before
-    moving to the next. This keeps memory usage proportional to the
-    largest single subfolder rather than the entire repo.
+    moving to the next. Memory stays proportional to the largest single
+    folder, not the entire repo.
 
     Returns total chunks indexed across all folders.
     """
@@ -170,7 +160,7 @@ def index_in_batches(
             on_log(msg)
 
     # Discover batches
-    folders = discover_batches(repo_root, profile, max_depth=depth)
+    folders = discover_batches(repo_root, profile)  # fully recursive
     total_batches = len(folders)
     log(f"📂 {total_batches} folder batch(es) discovered\n")
 
