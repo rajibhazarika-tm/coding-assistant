@@ -160,6 +160,11 @@ def _collection():
 _corpus_cache: dict[str, tuple[int, list, BM25]] = {}
 
 
+# Page size for col.get() — avoids "too many SQL variables" on Windows SQLite
+# builds that have a lower SQLITE_MAX_VARIABLE_NUMBER than the Linux default.
+_GET_PAGE_SIZE = 500
+
+
 def _get_cached_corpus(
     collection,
     where_filter: Optional[dict],
@@ -168,6 +173,9 @@ def _get_cached_corpus(
     """
     Return (chunk_id, doc, meta) triples for the filtered corpus, rebuilding
     the BM25 index only when the collection size has changed.
+
+    Uses paginated col.get() (500 rows/page) to avoid SQLite
+    "too many SQL variables" errors on Windows builds with lower limits.
     """
     count = collection.count()
     cache_key = f"{repr(where_filter)}|{file_filter or ''}"
@@ -177,19 +185,68 @@ def _get_cached_corpus(
         if cached_count == count:
             return cached_corpus  # cache hit
 
-    all_data = collection.get(where=where_filter, include=["documents", "metadatas"])
-    corpus = [
-        (chunk_id, doc, meta or {})
-        for chunk_id, doc, meta in zip(
-            all_data.get("ids", []),
-            all_data.get("documents", []),
-            all_data.get("metadatas", []),
-        )
-        if _meta_matches(meta or {}, file_filter)
-    ]
+    # Paginate to avoid SQLite variable-count limits
+    corpus: list[tuple[str, str, dict]] = []
+    offset = 0
+    get_kwargs: dict = {"include": ["documents", "metadatas"]}
+    if where_filter:
+        get_kwargs["where"] = where_filter
+
+    while True:
+        try:
+            page = collection.get(
+                limit=_GET_PAGE_SIZE,
+                offset=offset,
+                **get_kwargs,
+            )
+        except Exception as e:
+            # If paginated get still fails, try without the where filter
+            # and filter in Python (safer fallback)
+            if where_filter and offset == 0:
+                page = collection.get(
+                    limit=_GET_PAGE_SIZE,
+                    offset=offset,
+                    include=["documents", "metadatas"],
+                )
+            else:
+                break
+
+        ids  = page.get("ids", [])
+        docs = page.get("documents", [])
+        metas = page.get("metadatas", [])
+
+        for chunk_id, doc, meta in zip(ids, docs, metas):
+            meta = meta or {}
+            # Apply where_filter manually if we had to skip it above
+            if where_filter and not _meta_matches_filter(meta, where_filter):
+                continue
+            if not _meta_matches(meta, file_filter):
+                continue
+            corpus.append((chunk_id, doc, meta))
+
+        if len(ids) < _GET_PAGE_SIZE:
+            break  # last page
+        offset += _GET_PAGE_SIZE
+
     bm25 = BM25([doc for _, doc, _ in corpus])
     _corpus_cache[cache_key] = (count, corpus, bm25)
     return corpus
+
+
+def _meta_matches_filter(meta: dict, where_filter: Optional[dict]) -> bool:
+    """Python-side evaluation of a simple ChromaDB where_filter dict."""
+    if not where_filter:
+        return True
+    if "$and" in where_filter:
+        return all(_meta_matches_filter(meta, f) for f in where_filter["$and"])
+    if "$or" in where_filter:
+        return any(_meta_matches_filter(meta, f) for f in where_filter["$or"])
+    for key, val in where_filter.items():
+        if key.startswith("$"):
+            continue
+        if meta.get(key) != val:
+            return False
+    return True
 
 
 def _get_cached_bm25(
@@ -283,9 +340,16 @@ def retrieve(
     rrf_scores: dict[str, float] = {}
 
     try:
+        # Cap n_results to collection size to avoid ChromaDB errors.
+        # Also cap to 100 max — beyond that the SQL IN clause can hit
+        # SQLite variable limits on some Windows builds.
+        safe_fetch_k = min(fetch_k, collection.count(), 100)
+        if safe_fetch_k == 0:
+            raise ValueError("empty collection")
+
         kwargs: dict = {
             "query_embeddings": [_embed_query(query)],
-            "n_results": fetch_k,
+            "n_results": safe_fetch_k,
             "include": ["documents", "metadatas", "distances"],
         }
         if where_filter:
