@@ -1010,11 +1010,15 @@ class App(ctk.CTk):
                     self._index_stop_btn.configure(state="disabled")
                     self._indexing = False
                     # Show final chunk count from the message itself, then do a full poll
-                    total_str = item[1]  # e.g. "Complete — 90,770 chunks indexed"
-                    import re as _re
-                    m = _re.search(r"([\d,]+)\s+chunk", total_str)
-                    if m:
-                        self._lbl_chunks.configure(text=f"📦 {m.group(1)} chunks")
+                    total_str = item[1]  # e.g. "Complete — 90,770 total chunks indexed"
+                    # Extract the number using split — avoids regex escape issues
+                    # Format: "Complete — 90,770 total chunks indexed"
+                    _num = ""
+                    for _w in total_str.split():
+                        if _w.replace(",", "").isdigit():
+                            _num = _w; break
+                    if _num:
+                        self._lbl_chunks.configure(text=f"📦 {_num} chunks")
                     self._poll_status()
 
                 elif kind == "generic_token":

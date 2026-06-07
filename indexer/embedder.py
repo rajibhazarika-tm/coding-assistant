@@ -337,8 +337,11 @@ def delete_chunks_for_repo(repo_id: str) -> int:
 
 def get_collection_stats() -> dict:
     try:
+        # Read CHROMA_COLLECTION at call time (not module-level import)
+        # so the status bar reflects the live collection name
+        from config.settings import CHROMA_COLLECTION as _col
         client = _get_chroma_client()
-        collection = client.get_collection(CHROMA_COLLECTION)
+        collection = client.get_collection(_col)
         return {"total_chunks": collection.count(), "status": "ok"}
     except Exception as e:
         return {"total_chunks": 0, "status": f"error: {e}"}
