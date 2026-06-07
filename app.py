@@ -546,6 +546,8 @@ class App(ctk.CTk):
         self._indexing = True
         self._index_btn.configure(state="disabled", text="⏳ Indexing…")
         self._index_stop_btn.configure(state="normal")
+        self._lbl_chunks.configure(text="📦 Indexing…")
+        self._poll_status()  # immediate poll when indexing starts
         self._index_pbar.set(0)
         self._append_log(self._index_log, f"Starting index: {path}\n")
 
@@ -613,7 +615,8 @@ class App(ctk.CTk):
                         pct = indexed / max(total, 1)
                         pct_str = f"{pct*100:.0f}%"
                         self._stream_queue.put(("index_progress", pct,
-                            f"Embedding {indexed:,}/{total:,} ({pct_str})  ETA {eta}"))
+                            f"Embedding {indexed:,}/{total:,} ({pct_str})  ETA {eta}",
+                            indexed))  # pass raw count for status bar
 
                     n = index_chunks(chunks, show_progress=False, on_progress=_progress)
                     total_indexed += n
@@ -1005,9 +1008,12 @@ class App(ctk.CTk):
                     self._append_log(self._index_log, item[1])
 
                 elif kind == "index_progress":
-                    _, pct, label = item
+                    _, pct, label, indexed_so_far = item
                     self._index_pbar.set(pct)
                     self._index_plabel.configure(text=label)
+                    # Live-update the status bar chunk count without a DB round-trip
+                    if indexed_so_far:
+                        self._lbl_chunks.configure(text=f"📦 {indexed_so_far:,} chunks (indexing…)")
 
                 elif kind == "index_done":
                     self._index_pbar.set(1.0)
@@ -1015,6 +1021,12 @@ class App(ctk.CTk):
                     self._index_btn.configure(state="normal", text="▶  Start Indexing")
                     self._index_stop_btn.configure(state="disabled")
                     self._indexing = False
+                    # Show final chunk count from the message itself, then do a full poll
+                    total_str = item[1]  # e.g. "Complete — 90,770 chunks indexed"
+                    import re as _re
+                    m = _re.search(r"([\d,]+)\s+chunk", total_str)
+                    if m:
+                        self._lbl_chunks.configure(text=f"📦 {m.group(1)} chunks")
                     self._poll_status()
 
                 elif kind == "generic_token":
@@ -1084,7 +1096,9 @@ class App(ctk.CTk):
                                     getattr(s, "MODEL", "?"), chunks))
 
         threading.Thread(target=_check, daemon=True).start()
-        self.after(10_000, self._poll_status)
+        # Poll more frequently while indexing so the status bar stays fresh
+        interval = 3_000 if self._indexing else 10_000
+        self.after(interval, self._poll_status)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
