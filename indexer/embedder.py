@@ -24,9 +24,20 @@ from indexer.chunker import CodeChunk
 def _get_chroma_client():
     import chromadb
     from chromadb.config import Settings
+    from config.settings import INDEX_DIR as _idx_dir
     return chromadb.PersistentClient(
-        path=str(INDEX_DIR),
+        path=str(_idx_dir),
         settings=Settings(anonymized_telemetry=False),
+    )
+
+
+def _get_collection():
+    """Get or create the collection, reading CHROMA_COLLECTION at call time."""
+    from config.settings import CHROMA_COLLECTION as _col_name
+    client = _get_chroma_client()
+    return client.get_or_create_collection(
+        name=_col_name,
+        metadata={"hnsw:space": "cosine"},
     )
 
 
@@ -173,11 +184,7 @@ def index_chunks(
     if not chunks:
         return 0
 
-    client = _get_chroma_client()
-    collection = client.get_or_create_collection(
-        name=CHROMA_COLLECTION,
-        metadata={"hnsw:space": "cosine"},
-    )
+    collection = _get_collection()
 
     # ── Resume: skip chunks already in the index ──────────────────────────────
     if resume:

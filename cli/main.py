@@ -44,82 +44,66 @@ def cmd_index(args):
 
 def _index_single_path(repo_path: Path, profile_name: str, force: bool, dry_run: bool = False) -> int:
     import signal
-    from indexer.scanner import scan_repo, repo_id_for_path
-    from indexer.chunker import chunk_file
-    from indexer.embedder import index_chunks, delete_chunks_for_files, delete_chunks_for_repo, request_cancel
+    from indexer.scanner import repo_id_for_path
+    from indexer.embedder import request_cancel, reset_cancel
     from indexer.strategy import get_profile
+    from indexer.batch import index_in_batches, discover_batches
 
-    # On Ctrl+C: set cancel flag so the embed pool stops cleanly,
-    # then saves partial progress before exiting.
+    # Ctrl+C → clean cancel + save partial progress
     original_sigint = signal.getsignal(signal.SIGINT)
     def _handle_sigint(sig, frame):
-        print("\n\n⚠️  Ctrl+C received — stopping after current batch. Progress will be saved.")
+        print("\n\n⚠️  Ctrl+C — stopping after current folder. Progress saved.")
         request_cancel()
-        signal.signal(signal.SIGINT, original_sigint)  # restore so second Ctrl+C force-exits
+        signal.signal(signal.SIGINT, original_sigint)
     signal.signal(signal.SIGINT, _handle_sigint)
+    reset_cancel()
 
     profile = get_profile(profile_name)
-    print(f"\nIndexing: {repo_path}")
-    print(f"   Mode: {'full re-index' if force else 'incremental'}")
-    print(f"   Profile: {profile.name} - {profile.description}\n")
-
     repo_id = repo_id_for_path(repo_path)
-    files, deleted = scan_repo(
-        repo_path,
-        incremental=True,
-        force_reindex=force,
-        include_extensions=profile.include_extensions,
-        include_filenames=profile.include_filenames,
-        extra_skip_dirs=profile.extra_skip_dirs,
-        max_file_size_kb=profile.max_file_size_kb,
-        update_cache=not dry_run,
-    )
+
+    print(f"\nIndexing: {repo_path}")
+    print(f"   Mode:    {'full re-index' if force else 'incremental (resume-safe)'}")
+    print(f"   Profile: {profile.name}")
 
     if dry_run:
-        print(f"Dry run: {len(files):,} files would be indexed; {len(deleted):,} deleted files detected.")
-        print("No cache, chunks, or embeddings were written.")
+        from indexer.scanner import scan_repo
+        files, deleted = scan_repo(
+            repo_path, incremental=True, force_reindex=force,
+            include_extensions=profile.include_extensions,
+            include_filenames=profile.include_filenames,
+            extra_skip_dirs=profile.extra_skip_dirs,
+            max_file_size_kb=profile.max_file_size_kb,
+            update_cache=False,
+        )
+        batches = discover_batches(repo_path, profile)
+        print(f"\nDry run: {len(files):,} files in {len(batches)} folder batches")
+        print("No cache, chunks, or embeddings written.")
         return 0
 
-    if force:
-        removed = delete_chunks_for_repo(repo_id)
-        if removed:
-            print(f"Removed {removed} existing chunks for this repo")
+    # Show batch plan
+    batches = discover_batches(repo_path, profile)
+    print(f"   Batches: {len(batches)} folder(s) to process independently\n")
 
-    if deleted:
-        removed = delete_chunks_for_files(deleted, repo_id=repo_id)
-        print(f"Removed {removed} chunks for {len(deleted)} deleted files")
+    def _on_log(msg: str):
+        print(msg, end="")
 
-    if not files:
-        print("Nothing to index; all files are up to date.")
-        _print_stats()
-        return 0
+    def _on_progress(bp):
+        pct = int(bp.batch_index / max(bp.total_batches, 1) * 100)
+        bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+        print(f"\r   [{bar}] {pct:3d}%  [{bp.batch_index}/{bp.total_batches}] "
+              f"{bp.folder_name}  {bp.total_indexed_so_far:,} chunks  ETA {bp.eta_str}   ",
+              end="", flush=True)
 
-    print(f"\nChunking {len(files)} files...")
-    all_chunks = []
-    for scanned_file in files:
-        try:
-            content = scanned_file.path.read_text(encoding="utf-8", errors="replace")
-            chunks = chunk_file(
-                scanned_file.relative_path,
-                scanned_file.language,
-                content,
-                repo_id=scanned_file.repo_id,
-            )
-            all_chunks.extend(chunks)
-        except Exception as exc:
-            print(f"   {scanned_file.relative_path}: {exc}")
+    indexed = index_in_batches(
+        repo_root=repo_path,
+        repo_id=repo_id,
+        profile=profile,
+        force=force,
+        on_progress=_on_progress,
+        on_log=_on_log,
+    )
 
-    print(f"   -> {len(all_chunks)} semantic chunks extracted")
-
-    changed_paths = sorted({scanned_file.relative_path for scanned_file in files})
-    removed = delete_chunks_for_files(changed_paths, repo_id=repo_id)
-    if removed:
-        print(f"Removed {removed} stale chunks for changed files")
-
-    print("\nEmbedding and storing in ChromaDB...")
-    indexed = index_chunks(all_chunks, show_progress=True)
-
-    print(f"\nDone. Indexed {indexed} chunks from {len(files)} files.")
+    print(f"\n\nDone. Indexed {indexed:,} total chunks.")
     _print_stats()
     return indexed
 

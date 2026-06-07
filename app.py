@@ -557,21 +557,21 @@ class App(ctk.CTk):
         def _work():
             try:
                 sys.path.insert(0, str(Path(__file__).parent))
-                from indexer.scanner import scan_repo, repo_id_for_path
-                from indexer.chunker import chunk_file
-                from indexer.embedder import (index_chunks, delete_chunks_for_files,
-                                               delete_chunks_for_repo, request_cancel, reset_cancel)
+                from indexer.scanner import repo_id_for_path
+                from indexer.embedder import request_cancel, reset_cancel
                 from indexer.strategy import analyze_repo, get_profile
-                reset_cancel()  # clear any previous cancel
+                from indexer.batch import index_in_batches
+                reset_cancel()
 
                 repo_path = Path(path)
                 repo_id = repo_id_for_path(repo_path)
 
+                # Auto-detect framework profile
                 if auto:
                     analysis = analyze_repo(repo_path)
+                    areas = [(a.path, a.profile) for a in analysis.areas]
                     self._stream_queue.put(("index_log",
                         f"Detected: {analysis.repo_type}, {len(analysis.areas)} area(s)\n"))
-                    areas = [(a.path, a.profile) for a in analysis.areas]
                 else:
                     areas = [(repo_path, "generic")]
 
@@ -579,53 +579,41 @@ class App(ctk.CTk):
                 for area_path, profile_name in areas:
                     profile = get_profile(profile_name)
                     self._stream_queue.put(("index_log",
-                        f"Scanning {area_path.name}/ [{profile_name}]…\n"))
+                        f"Area: {area_path.name}/ [{profile_name}]\n"))
 
-                    files, deleted = scan_repo(
-                        area_path, incremental=True, force_reindex=force,
-                        include_extensions=profile.include_extensions,
-                        include_filenames=profile.include_filenames,
-                        extra_skip_dirs=profile.extra_skip_dirs,
-                        max_file_size_kb=profile.max_file_size_kb,
+                    def _on_log(msg: str):
+                        self._stream_queue.put(("index_log", msg))
+
+                    def _on_progress(bp):
+                        # Overall progress bar: batch_index / total_batches
+                        overall_pct = bp.batch_index / max(bp.total_batches, 1)
+                        label = (
+                            f"[{bp.batch_index}/{bp.total_batches}] {bp.folder_name}  "
+                            f"{bp.chunks_indexed:,} chunks  ETA {bp.eta_str}"
+                        )
+                        self._stream_queue.put((
+                            "index_progress",
+                            overall_pct,
+                            label,
+                            bp.total_indexed_so_far,
+                        ))
+
+                    n = index_in_batches(
+                        repo_root=area_path,
+                        repo_id=repo_id,
+                        profile=profile,
+                        force=force,
+                        on_progress=_on_progress,
+                        on_log=_on_log,
                     )
-                    self._stream_queue.put(("index_log",
-                        f"  {len(files)} files to index, {len(deleted)} deleted\n"))
-
-                    if force:
-                        delete_chunks_for_repo(repo_id)
-                    if deleted:
-                        delete_chunks_for_files(deleted, repo_id=repo_id)
-
-                    if not files:
-                        self._stream_queue.put(("index_log", "  Nothing changed.\n"))
-                        continue
-
-                    chunks = []
-                    for f in files:
-                        try:
-                            content = f.path.read_text(encoding="utf-8", errors="replace")
-                            chunks.extend(chunk_file(f.relative_path, f.language,
-                                                     content, repo_id=repo_id))
-                        except Exception:
-                            pass
-                    self._stream_queue.put(("index_log",
-                        f"  {len(chunks)} chunks extracted\n"))
-
-                    def _progress(indexed, total, eta):
-                        pct = indexed / max(total, 1)
-                        pct_str = f"{pct*100:.0f}%"
-                        self._stream_queue.put(("index_progress", pct,
-                            f"Embedding {indexed:,}/{total:,} ({pct_str})  ETA {eta}",
-                            indexed))  # pass raw count for status bar
-
-                    n = index_chunks(chunks, show_progress=False, on_progress=_progress)
                     total_indexed += n
-                    self._stream_queue.put(("index_log", f"  ✅ {n} chunks stored\n"))
 
                 self._stream_queue.put(("index_done",
-                    f"Complete — {total_indexed} total chunks indexed"))
+                    f"Complete — {total_indexed:,} total chunks indexed"))
             except Exception as e:
-                self._stream_queue.put(("index_log", f"❌ Error: {e}\n"))
+                import traceback
+                self._stream_queue.put(("index_log",
+                    f"❌ Error: {e}\n{traceback.format_exc()}\n"))
                 self._stream_queue.put(("index_done", ""))
 
         threading.Thread(target=_work, daemon=True).start()
