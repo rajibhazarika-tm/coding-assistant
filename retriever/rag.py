@@ -53,8 +53,8 @@ from retriever.hybrid_search import RetrievedChunk, retrieve as _hybrid_retrieve
 from retriever.pipeline import (
     run_pipeline, grep_search, grep_matches_to_chunks,
     QueryPlan, analyse_query, merge_results, rerank,
-    _rrf_score,
 )
+from retriever.hybrid_search import _rrf_score
 from retriever.context_builder import build_context, _rough_token_count
 from assistant.prompts import build_prompt, build_no_context_prompt
 from assistant.llm import stream_response, _trim_history_to_budget
@@ -183,7 +183,7 @@ def _embed_text(text: str) -> list[float]:
                 raise requests.HTTPError(str(r.status_code))
             r.raise_for_status()
             return r.json()["embedding"]
-        except requests.RequestException:
+        except (requests.RequestException, OSError):
             if attempt == 2:
                 return []
             time.sleep(2 ** attempt)
