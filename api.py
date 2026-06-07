@@ -30,8 +30,11 @@ class QueryRequest(BaseModel):
     question: str
     top_k: int = 5
     language_filter: Optional[str] = None
-    repo_root: Optional[str] = None   # for ripgrep; defaults to cwd
-    use_pipeline: bool = True          # False = legacy hybrid-only
+    repo_root: Optional[str] = None
+    use_pipeline: bool = True           # False = legacy hybrid-only
+    use_rag: bool = True                # True = full RAG pipeline
+    use_compression: bool = False       # True = contextual compression (slower)
+    check_faithfulness: bool = False    # True = verify answer vs context
 
 class ReviewRequest(BaseModel):
     file_path: str
@@ -253,30 +256,52 @@ async def index_stream(req: IndexRequest):
 @app.post("/api/ask/stream")
 async def ask_stream(req: QueryRequest):
     async def generate():
-        from assistant.prompts import build_prompt, build_no_context_prompt
-        from assistant.llm import stream_response
+        if req.use_rag:
+            from retriever.rag import rag_stream, understand_query
+            from retriever.hybrid_search import retrieve
 
-        if req.use_pipeline:
-            from retriever.pipeline import run_pipeline
+            step_events = []
+            def on_step(name, data):
+                step_events.append((name, data))
+
+            # Run query understanding sync first (fast, ~1s)
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, lambda: run_pipeline(
-                    req.question, repo_root=req.repo_root,
-                    top_k=req.top_k, language_filter=req.language_filter,
-                )
+            raq = await loop.run_in_executor(
+                None, lambda: understand_query(req.question)
             )
-            # Stream the pipeline trace first so UI can show it
-            yield f"data: {json.dumps({'type':'plan','plan':{'search_terms':result.plan.search_terms,'semantic_query':result.plan.semantic_query,'file_hints':result.plan.file_hints,'task':result.plan.task,'reasoning':result.plan.reasoning}})}\n\n"
-            yield f"data: {json.dumps({'type':'grep_hits','count':len(result.grep_chunks),'terms':result.plan.search_terms})}\n\n"
-            yield f"data: {json.dumps({'type':'semantic_hits','count':len(result.semantic_chunks)})}\n\n"
-            yield f"data: {json.dumps({'type':'final_chunks','chunks':[{'file':c.file_path,'lines':f'{c.start_line}-{c.end_line}','type':c.chunk_type,'name':c.name,'score':c.score,'source':'grep' if c.chunk_type=='grep_match' else 'semantic'} for c in result.final_chunks]})}\n\n"
-            yield f"data: {json.dumps({'type':'sources','files':result.sources})}\n\n"
-            yield f"data: {json.dumps({'type':'timings','timings':result.timings})}\n\n"
-            context, sources = result.context, result.sources
-            system, user_msg = build_prompt(result.plan.task, req.question, context, sources)
+            yield f"data: {json.dumps({'type':'plan','plan':{'search_terms':raq.plan.search_terms,'semantic_query':raq.reformulated,'file_hints':raq.plan.file_hints,'task':raq.plan.task,'reasoning':raq.plan.reasoning,'sub_queries':raq.sub_queries,'hypothetical':raq.hypothetical_answer[:120] if raq.hypothetical_answer else ''}})}\n\n"
+
+            # Stream tokens from RAG pipeline
+            full = ""
+            for token in rag_stream(
+                question=req.question,
+                top_k=req.top_k,
+                repo_root=req.repo_root,
+                language_filter=req.language_filter,
+                use_compression=req.use_compression,
+                check_faithfulness_flag=req.check_faithfulness,
+                on_step=on_step,
+            ):
+                full += token
+                yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
+
+            # Emit step data collected during generation
+            for name, data in step_events:
+                if name == "retrieved":
+                    yield f"data: {json.dumps({'type':'retrieved','count':len(data),'chunks':[{'file':c.file_path.split('/')[-1],'lines':f'{c.start_line}-{c.end_line}','score':round(c.score,3),'source':'grep' if c.chunk_type=='grep_match' else 'rag'} for c in data]})}\n\n"
+                elif name == "context_built":
+                    ctx, srcs, tok = data
+                    yield f"data: {json.dumps({'type':'sources','files':srcs})}\n\n"
+                    yield f"data: {json.dumps({'type':'context_tokens','tokens':tok})}\n\n"
+                elif name == "faithfulness":
+                    yield f"data: {json.dumps({'type':'faithfulness','result':data})}\n\n"
+
         else:
             from retriever.hybrid_search import retrieve
             from retriever.context_builder import build_context
+            from assistant.prompts import build_prompt, build_no_context_prompt
+            from assistant.llm import stream_response
+
             chunks = retrieve(req.question, top_k=req.top_k, language_filter=req.language_filter)
             if chunks:
                 context, sources = build_context(chunks, req.question)
@@ -285,9 +310,9 @@ async def ask_stream(req: QueryRequest):
                 system, user_msg = build_no_context_prompt("general", req.question)
                 sources = []
             yield f"data: {json.dumps({'type':'sources','files':sources})}\n\n"
+            for token in stream_response(system, user_msg):
+                yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
 
-        for token in stream_response(system, user_msg):
-            yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
         yield f"data: {json.dumps({'type':'done'})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream",

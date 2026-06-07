@@ -402,47 +402,63 @@ class App(ctk.CTk):
         def _work():
             try:
                 sys.path.insert(0, str(Path(__file__).parent))
-                from retriever.pipeline import run_pipeline
-                from assistant.prompts import build_prompt
-                from assistant.llm import stream_response
+                from retriever.rag import rag_stream, understand_query
 
-                result = run_pipeline(q, repo_root=repo, top_k=top_k)
-                plan = result.plan
+                trace_lines = []
 
-                # Build trace text
-                trace = (
-                    f"① Query analysis   terms={plan.search_terms}  task={plan.task}\n"
-                    f"   Reasoning: {plan.reasoning}\n"
-                    f"② Grep results     {len(result.grep_chunks)} exact matches "
-                    f"  terms={plan.search_terms}\n"
-                    f"③ Semantic hits    {len(result.semantic_chunks)} vector+BM25 matches\n"
-                    f"   Rewritten query: {plan.semantic_query}\n"
-                    f"④ Merged & deduped {len(result.final_chunks)} unique chunks\n"
-                    f"⑤ Reranked — final context:\n"
-                )
-                for c in result.final_chunks:
-                    src = "grep" if c.chunk_type == "grep_match" else "sem"
-                    trace += f"   [{src}] {c.file_path.split('/')[-1]}:{c.start_line}-{c.end_line} score={c.score:.3f}\n"
-                timings = "  ".join(f"{k}:{v}s" for k, v in result.timings.items())
-                trace += f"\n⏱ Timings: {timings}"
+                def on_step(name, data):
+                    if name == "query_understood":
+                        raq = data
+                        lines = [
+                            f"① Query understanding",
+                            f"   Task: {raq.plan.task}  multi-hop: {raq.is_multi_hop}",
+                            f"   Reformulated: {raq.reformulated[:80]}",
+                            f"   Grep terms: {raq.plan.search_terms}",
+                            f"   Hypothetical: {raq.hypothetical_answer[:80]}..." if raq.hypothetical_answer else "",
+                        ]
+                        trace_lines.extend(l for l in lines if l)
+                        self._stream_queue.put(("ask_trace", "\n".join(trace_lines)))
 
-                self._stream_queue.put(("ask_trace", trace))
-                if result.sources:
-                    self._stream_queue.put(("ask_sources",
-                        "Sources: " + "  ·  ".join(Path(s).name for s in result.sources)))
+                    elif name == "retrieved":
+                        chunks = data
+                        trace_lines.append(f"② Retrieved {len(chunks)} chunks (HDE + vector + BM25 + grep)")
+                        for c in chunks[:5]:
+                            src = "grep" if c.chunk_type == "grep_match" else "rag"
+                            trace_lines.append(f"   [{src}] {c.file_path.split('/')[-1]}:{c.start_line}-{c.end_line} score={c.score:.3f}")
+                        self._stream_queue.put(("ask_trace", "\n".join(trace_lines)))
 
-                system, user_msg = build_prompt(plan.task, q, result.context, result.sources)
-                self._stream_queue.put(("ask_token", ""))  # clear placeholder
+                    elif name == "compressed":
+                        trace_lines.append(f"③ Contextual compression applied")
+                        self._stream_queue.put(("ask_trace", "\n".join(trace_lines)))
+
+                    elif name == "context_built":
+                        ctx, srcs, tok = data
+                        trace_lines.append(f"④ Context: ~{tok} tokens from {len(srcs)} files")
+                        self._stream_queue.put(("ask_trace", "\n".join(trace_lines)))
+                        if srcs:
+                            self._stream_queue.put(("ask_sources",
+                                "Sources: " + "  ·  ".join(Path(s).name for s in srcs)))
+
+                    elif name == "generating":
+                        trace_lines.append(f"⑤ Generating answer…")
+                        self._stream_queue.put(("ask_trace", "\n".join(trace_lines)))
+                        self._stream_queue.put(("ask_token", ""))
+
+                    elif name == "faithfulness":
+                        f = data
+                        verdict = "✅ Faithful" if f.get("is_faithful") else "⚠️ May hallucinate"
+                        trace_lines.append(f"⑥ Faithfulness: {verdict} — {f.get('verdict','')}")
+                        self._stream_queue.put(("ask_trace", "\n".join(trace_lines)))
 
                 full = ""
-                for token in stream_response(system, user_msg):
+                for token in rag_stream(
+                    question=q, top_k=top_k,
+                    repo_root=repo or None,
+                    on_step=on_step,
+                ):
                     full += token
-                    # Throttle: only update UI every 15 tokens to avoid
-                    # flooding the queue with thousands of tiny rewrites
-                    # which causes the "repeated response" visual glitch.
                     if len(full) % 60 == 0:
                         self._stream_queue.put(("ask_token", full))
-                # Always push final complete text
                 self._stream_queue.put(("ask_token", full))
                 self._stream_queue.put(("ask_done", full))
             except Exception as e:
