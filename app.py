@@ -268,7 +268,9 @@ class App(ctk.CTk):
                 full = ""
                 for token in stream_response(system, user_msg, history=history):
                     full += token
-                    self._stream_queue.put(("chat_token", reply_box, full))
+                    if len(full) % 60 == 0:
+                        self._stream_queue.put(("chat_token", reply_box, full))
+                self._stream_queue.put(("chat_token", reply_box, full))
                 self._stream_queue.put(("chat_done", reply_box, full))
                 self.chat_history.append({"role": "user", "content": q})
                 self.chat_history.append({"role": "assistant", "content": full})
@@ -280,7 +282,11 @@ class App(ctk.CTk):
     # ── Ask panel ─────────────────────────────────────────────────────────────
     def _build_ask_panel(self):
         p = self._make_panel("ask")
+        # row 0 = controls (fixed), row 1 = trace (fixed, collapsible),
+        # row 2 = output (expands to fill all remaining space)
         p.grid_rowconfigure(2, weight=1)
+        p.grid_rowconfigure(0, weight=0)
+        p.grid_rowconfigure(1, weight=0)
 
         # Controls
         ctrl = ctk.CTkFrame(p, fg_color=C["bg2"], corner_radius=8)
@@ -329,9 +335,12 @@ class App(ctk.CTk):
         self._ask_trace = ctk.CTkFrame(p, fg_color=C["bg2"], corner_radius=8)
         self._ask_trace.grid(row=1, column=0, padx=16, pady=(0, 8), sticky="ew")
         self._ask_trace.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self._ask_trace, text="🔍 Retrieval pipeline",
+        self._ask_trace_lbl = ctk.CTkLabel(self._ask_trace,
+                     text="🔍 Retrieval pipeline  ▶ show",
                      font=ctk.CTkFont("Segoe UI Semibold", 12),
-                     text_color=C["text2"]).grid(row=0, column=0, padx=14, pady=(8, 4), sticky="w")
+                     text_color=C["text2"], cursor="hand2")
+        self._ask_trace_lbl.grid(row=0, column=0, padx=14, pady=(8, 4), sticky="w")
+        self._ask_trace_lbl.bind("<Button-1>", lambda e: self._toggle_ask_trace())
         self._ask_trace_text = ctk.CTkTextbox(self._ask_trace, height=110,
                                                font=ctk.CTkFont("Consolas", 11),
                                                fg_color=C["bg"], border_width=0,
@@ -339,6 +348,9 @@ class App(ctk.CTk):
         self._ask_trace_text.grid(row=1, column=0, padx=12, pady=(0, 10), sticky="ew")
         self._ask_trace_text.insert("1.0", "Run a query to see the pipeline steps here.")
         self._ask_trace_text.configure(state="disabled")
+        # Start collapsed — user can click the title to expand
+        self._ask_trace_collapsed = True
+        self._ask_trace_text.grid_remove()
 
         # Output
         out_frame = ctk.CTkFrame(p, fg_color=C["bg2"], corner_radius=8)
@@ -349,12 +361,24 @@ class App(ctk.CTk):
                                               font=ctk.CTkFont("Consolas", 11),
                                               text_color=C["accent2"])
         self._ask_sources_lbl.grid(row=0, column=0, padx=14, pady=(8, 0), sticky="w")
-        self._ask_output = ctk.CTkTextbox(out_frame, font=ctk.CTkFont("Segoe UI", 13),
+        self._ask_output = ctk.CTkTextbox(out_frame,
+                                           font=ctk.CTkFont("Segoe UI", 13),
                                            fg_color=C["bg3"], border_width=0,
-                                           text_color=C["text"], wrap="word")
+                                           text_color=C["text"], wrap="word",
+                                           height=400)   # min height so it's never tiny
         self._ask_output.grid(row=1, column=0, padx=12, pady=(4, 12), sticky="nsew")
         self._ask_output.insert("1.0", "Answer will appear here.")
         self._ask_output.configure(state="disabled")
+
+    def _toggle_ask_trace(self):
+        if self._ask_trace_collapsed:
+            self._ask_trace_text.grid()
+            self._ask_trace_lbl.configure(text="🔍 Retrieval pipeline  ▼ hide")
+            self._ask_trace_collapsed = False
+        else:
+            self._ask_trace_text.grid_remove()
+            self._ask_trace_lbl.configure(text="🔍 Retrieval pipeline  ▶ show")
+            self._ask_trace_collapsed = True
 
     def _run_ask(self):
         q = self._ask_input.get("1.0", "end").strip()
@@ -368,6 +392,10 @@ class App(ctk.CTk):
 
         self._ask_btn.configure(state="disabled", text="⏳ Searching…")
         self._set_output(self._ask_output, "⏳ Running pipeline…")
+        # Auto-expand trace when query starts
+        self._ask_trace_text.grid()
+        self._ask_trace_lbl.configure(text="🔍 Retrieval pipeline  ▼ hide")
+        self._ask_trace_collapsed = False
         self._set_output(self._ask_trace_text, "Step 1/5 — Analysing query…")
         self._ask_sources_lbl.configure(text="")
 
@@ -409,7 +437,13 @@ class App(ctk.CTk):
                 full = ""
                 for token in stream_response(system, user_msg):
                     full += token
-                    self._stream_queue.put(("ask_token", full))
+                    # Throttle: only update UI every 15 tokens to avoid
+                    # flooding the queue with thousands of tiny rewrites
+                    # which causes the "repeated response" visual glitch.
+                    if len(full) % 60 == 0:
+                        self._stream_queue.put(("ask_token", full))
+                # Always push final complete text
+                self._stream_queue.put(("ask_token", full))
                 self._stream_queue.put(("ask_done", full))
             except Exception as e:
                 self._stream_queue.put(("ask_token", f"❌ Error: {e}"))
@@ -895,7 +929,9 @@ class App(ctk.CTk):
                 full = ""
                 for token in stream_response(system, user_msg):
                     full += token
-                    self._stream_queue.put(("generic_token", output_box, full))
+                    if len(full) % 60 == 0:
+                        self._stream_queue.put(("generic_token", output_box, full))
+                self._stream_queue.put(("generic_token", output_box, full))
                 self._stream_queue.put(("generic_done", output_box, btn, btn_label))
             except Exception as e:
                 self._stream_queue.put(("generic_token", output_box, f"❌ Error: {e}"))
@@ -929,7 +965,21 @@ class App(ctk.CTk):
                     self._ask_sources_lbl.configure(text=item[1])
 
                 elif kind == "ask_token":
-                    self._set_output(self._ask_output, item[1] or "⏳ Waiting for model…")
+                    # Drain any additional ask_token items that queued up
+                    # between ticks — only render the most recent text.
+                    latest = item[1]
+                    try:
+                        while True:
+                            peeked = self._stream_queue.get_nowait()
+                            if peeked[0] == "ask_token":
+                                latest = peeked[1]
+                            else:
+                                # Put non-ask_token back at front (re-queue)
+                                self._stream_queue.put(peeked)
+                                break
+                    except queue.Empty:
+                        pass
+                    self._set_output(self._ask_output, latest or "⏳ Waiting for model…")
 
                 elif kind == "ask_done":
                     self._ask_btn.configure(state="normal", text="Ask")
