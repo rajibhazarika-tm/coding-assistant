@@ -58,6 +58,7 @@ class SettingsUpdate(BaseModel):
     embed_num_ctx: Optional[int] = None
     embed_max_chars: Optional[int] = None
     embed_query_max_chars: Optional[int] = None
+    llm_timeout_seconds: Optional[int] = None
     llm_temperature: Optional[float] = None
     llm_max_tokens: Optional[int] = None
 
@@ -85,6 +86,7 @@ def get_settings():
         "embed_num_ctx": s.EMBED_NUM_CTX,
         "embed_max_chars": s.EMBED_MAX_CHARS,
         "embed_query_max_chars": s.EMBED_QUERY_MAX_CHARS,
+        "llm_timeout_seconds": s.LLM_TIMEOUT_SECONDS,
         "llm_temperature": s.LLM_TEMPERATURE,
         "llm_max_tokens": s.LLM_MAX_TOKENS,
     }
@@ -108,6 +110,7 @@ def update_settings(req: SettingsUpdate):
         "embed_num_ctx": "EMBED_NUM_CTX",
         "embed_max_chars": "EMBED_MAX_CHARS",
         "embed_query_max_chars": "EMBED_QUERY_MAX_CHARS",
+        "llm_timeout_seconds": "LLM_TIMEOUT_SECONDS",
         "llm_temperature": "LLM_TEMPERATURE", "llm_max_tokens": "LLM_MAX_TOKENS",
     }
     for field, env_key in mapping.items():
@@ -419,6 +422,17 @@ async def chat_stream(req: ChatRequest):
                              headers={"Cache-Control": "no-cache"})
 
 # ── Serve UI ──────────────────────────────────────────────────────────────────
+@app.post("/api/index/stop")
+async def index_stop():
+    """Signal the indexing worker to stop gracefully."""
+    try:
+        from indexer.embedder import request_cancel
+        request_cancel()
+        return {"status": "stop requested"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
     ui = Path(__file__).parent / "ui" / "index.html"
