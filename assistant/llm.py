@@ -42,8 +42,14 @@ def check_model_available(model: str = MODEL) -> bool:
 
 
 def _count_tokens_approx(messages: list[dict]) -> int:
-    """Rough token count for a message list (4 chars ≈ 1 token for code)."""
-    return sum(len(m.get("content", "")) for m in messages) // 4
+    """
+    Rough token count for a message list.
+    Code tokenises at ~2.5-3 chars/token (brackets, keywords, identifiers
+    each count as 1 token). Using 3 chars/token — more conservative than
+    the old 4, so trimming kicks in earlier and avoids overflow.
+    """
+    total_chars = sum(len(m.get("content", "")) for m in messages)
+    return total_chars // 3
 
 
 def _trim_history_to_budget(
@@ -54,11 +60,15 @@ def _trim_history_to_budget(
     reserve_for_response: int,
 ) -> list[dict]:
     """
-    Drop oldest history pairs until the full message list fits within
-    (max_tokens - reserve_for_response). Always keeps at least the last
-    2 turns (1 user + 1 assistant) so chat remains coherent.
+    Drop oldest history pairs until the full message fits within budget.
+
+    Uses 80% of the available budget as a safety margin — token counting
+    is approximate (3 chars/token estimate) and Ollama measures differently.
+    The 20% headroom ensures we never overflow even with estimation error.
+    Always keeps at least the last 2 turns for conversational coherence.
     """
-    budget = max_tokens - reserve_for_response
+    # 80% safety margin accounts for tokeniser differences
+    budget = int((max_tokens - reserve_for_response) * 0.80)
     base = [{"role": "system", "content": system}] if system else []
     base += [{"role": "user", "content": user_message}]
     base_tokens = _count_tokens_approx(base)
@@ -89,9 +99,10 @@ def stream_response(
     - Setting num_ctx explicitly so Ollama uses the right window size
     - Truncating user_message as a last-resort safety net
     """
-    # Safety net: if the user message itself is enormous (e.g. pasted a full file),
-    # truncate it — better a partial answer than a 500 error
-    max_user_chars = (MAX_CONTEXT_TOKENS - 512) * 4  # ~4 chars/token, leave 512 for system+response
+    # Safety net: truncate enormous user messages (pasted files, huge error logs).
+    # Reserve 40% of context budget for system prompt + history.
+    # Use 3 chars/token (conservative for code).
+    max_user_chars = int(MAX_CONTEXT_TOKENS * 0.60 * 3)
     if len(user_message) > max_user_chars:
         user_message = user_message[:max_user_chars] + "\n\n[...truncated to fit context window]"
 
@@ -116,7 +127,11 @@ def stream_response(
         "options": {
             "temperature": temperature,
             "num_predict": LLM_MAX_TOKENS,
-            "num_ctx": MAX_CONTEXT_TOKENS + LLM_MAX_TOKENS,  # Total context window
+            # num_ctx = total window Ollama allocates (input + output).
+        # Must be large enough for: system + history + RAG context + user message + response.
+        # We pass MAX_CONTEXT_TOKENS (now 4096) + LLM_MAX_TOKENS (1024) = 5120.
+        # At 4GB VRAM this uses ~640MB KV cache — safe with qwen2.5-coder:7b.
+        "num_ctx": MAX_CONTEXT_TOKENS + LLM_MAX_TOKENS,
         },
     }
 

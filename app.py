@@ -800,7 +800,7 @@ class App(ctk.CTk):
         _field(s1, 2, 0, "Ollama URL", "url", "http://localhost:11434", width=300)
 
         s2 = _section(1, "Context & Memory")
-        _field(s2, 1, 0, "Max Context Tokens", "ctx", "2048")
+        _field(s2, 1, 0, "Max Context Tokens", "ctx", "4096")
         _field(s2, 1, 1, "Top-K Chunks", "topk", "5")
         _field(s2, 2, 0, "Chunk Max Lines", "chunk", "50")
         _field(s2, 2, 1, "LLM Temperature", "temp", "0.1")
@@ -840,6 +840,7 @@ class App(ctk.CTk):
                 "ctx": s.MAX_CONTEXT_TOKENS, "topk": s.TOP_K_CHUNKS,
                 "chunk": s.CHUNK_MAX_LINES, "temp": s.LLM_TEMPERATURE,
                 "maxtok": s.LLM_MAX_TOKENS,
+                "timeout": s.LLM_TIMEOUT_SECONDS,
                 "workers": s.EMBED_WORKERS, "batch": s.CHROMA_BATCH_SIZE,
                 "numctx": s.EMBED_NUM_CTX,
                 "maxchars": s.EMBED_MAX_CHARS,

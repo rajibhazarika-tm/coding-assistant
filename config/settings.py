@@ -27,7 +27,13 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # ─── Memory / Context Budget ──────────────────────────────────────────────────
 # CRITICAL: Keep context small — 4GB VRAM means the model needs headroom
 # qwen2.5-coder:7b supports 32K but with 4GB VRAM, stay under 4K for fast inference
-MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "2048"))
+# Context window for the LLM (input tokens).
+# qwen2.5-coder:7b supports 32k but at 4GB VRAM the safe working range is:
+#   4096 input + 1024 output = 5120 total  (~512MB KV cache, fits in 4GB)
+# The old default of 2048 caused "try a smaller context" errors after just
+# 3-4 chat turns because: system(~800) + RAG context(~1200) + history(~1200)
+# already exceeds 2048 before the user message is even added.
+MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "4096"))
 
 # Number of chunks to retrieve per query
 TOP_K_CHUNKS = int(os.getenv("TOP_K_CHUNKS", "5"))
@@ -154,5 +160,5 @@ EMBED_QUERY_MAX_CHARS = int(os.getenv("EMBED_QUERY_MAX_CHARS", "1500"))
 
 # ─── LLM Generation ───────────────────────────────────────────────────────────
 LLM_TEMPERATURE = 0.1       # Low temperature for deterministic code output
-LLM_MAX_TOKENS = 1024       # Enough for a function or review; keep short for speed
-LLM_TIMEOUT_SECONDS = 120   # Ollama can be slow on first load
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))   # max response tokens
+LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "180"))  # raised: large context + slow GPU needs time
