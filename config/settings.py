@@ -14,84 +14,41 @@ INDEX_DIR = DATA_DIR / "index"
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─── Models ───────────────────────────────────────────────────────────────────
-# Primary coding model — fits in 4GB VRAM at Q4_K_M quantization
-# HumanEval: ~88%, supports 92+ languages, Apache 2.0 license
-MODEL = os.getenv("CODING_MODEL", "qwen2.5-coder:7b")
-
-# Lightweight embedding model — runs on CPU, ~270MB
+MODEL      = os.getenv("CODING_MODEL", "qwen2.5-coder:7b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
-
-# Ollama API base
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-# ─── Memory / Context Budget ──────────────────────────────────────────────────
-# CRITICAL: Keep context small — 4GB VRAM means the model needs headroom
-# qwen2.5-coder:7b supports 32K but with 4GB VRAM, stay under 4K for fast inference
-# Context window for the LLM (input tokens).
-# qwen2.5-coder:7b supports 32k but at 4GB VRAM the safe working range is:
-#   4096 input + 1024 output = 5120 total  (~512MB KV cache, fits in 4GB)
-# The old default of 2048 caused "try a smaller context" errors after just
-# 3-4 chat turns because: system(~800) + RAG context(~1200) + history(~1200)
-# already exceeds 2048 before the user message is even added.
+# ─── Context / Memory ─────────────────────────────────────────────────────────
+# Input token budget for the LLM.
+# qwen2.5-coder:7b supports 32k but 4GB VRAM limits safe use to ~4096 input.
+# KV cache at 4096 tokens ≈ 512MB — leaves ~3.5GB for model weights.
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "4096"))
 
-# Number of chunks to retrieve per query
-TOP_K_CHUNKS = int(os.getenv("TOP_K_CHUNKS", "5"))
+TOP_K_CHUNKS    = int(os.getenv("TOP_K_CHUNKS", "5"))
 
-# Approximate token budget per chunk (leaves room for system prompt + response)
-TOKENS_PER_CHUNK = 300
-
-# Reserve tokens for system prompt, question, and response
-RESERVED_TOKENS = 512
+# Tokens reserved for: system prompt (~400) + question (~200) + sources header (~100)
+# Raised from 512 to 700 to match actual system prompt sizes.
+RESERVED_TOKENS = 700
 
 # ─── Indexing ─────────────────────────────────────────────────────────────────
-# Maximum lines per chunk (prevents oversized embeddings)
-CHUNK_MAX_LINES = int(os.getenv("CHUNK_MAX_LINES", "60"))
-
-# Minimum lines to bother chunking (skip tiny stubs)
-CHUNK_MIN_LINES = 3
-
-# ChromaDB collection name
+CHUNK_MAX_LINES  = int(os.getenv("CHUNK_MAX_LINES", "60"))
+CHUNK_MIN_LINES  = 3
 CHROMA_COLLECTION = "code_index"
-
-# Hash file to track changed files for incremental indexing
-HASH_CACHE_FILE = INDEX_DIR / "file_hashes.json"
+HASH_CACHE_FILE  = INDEX_DIR / "file_hashes.json"
 
 # ─── File Filtering ───────────────────────────────────────────────────────────
-# Supported languages (tree-sitter parsers available for these)
 SUPPORTED_EXTENSIONS = {
-    ".py": "python",
-    ".js": "javascript",
-    ".ts": "typescript",
-    ".tsx": "tsx",
-    ".jsx": "javascript",
-    ".java": "java",
-    ".go": "go",
-    ".rs": "rust",
-    ".cpp": "cpp",
-    ".c": "c",
-    ".cs": "c_sharp",
-    ".rb": "ruby",
-    ".php": "php",
-    ".swift": "swift",
-    ".kt": "kotlin",
-    ".scala": "scala",
-    ".sh": "bash",
-    ".md": "markdown",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".json": "json",
-    ".toml": "toml",
-    ".xml": "xml",
-    ".properties": "properties",
-    ".gradle": "gradle",
-    ".sql": "sql",
-    ".html": "html",
-    ".css": "css",
-    ".scss": "scss",
+    ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".tsx": "tsx", ".jsx": "javascript", ".java": "java",
+    ".go": "go", ".rs": "rust", ".cpp": "cpp", ".c": "c",
+    ".cs": "c_sharp", ".rb": "ruby", ".php": "php",
+    ".swift": "swift", ".kt": "kotlin", ".scala": "scala",
+    ".sh": "bash", ".md": "markdown", ".yaml": "yaml", ".yml": "yaml",
+    ".json": "json", ".toml": "toml", ".xml": "xml",
+    ".properties": "properties", ".gradle": "gradle",
+    ".sql": "sql", ".html": "html", ".css": "css", ".scss": "scss",
 }
 
-# Directories to always skip
 SKIP_DIRS = {
     ".git", ".svn", ".hg",
     "node_modules", "__pycache__", ".pytest_cache",
@@ -99,66 +56,40 @@ SKIP_DIRS = {
     "dist", "build", "target", "out",
     ".gradle", ".mvn", "logs", "log", "tmp", "temp",
     "generated", "generated-sources", "generated-test-sources",
-    ".idea", ".vscode",
-    "coverage", ".coverage",
-    "migrations",  # usually auto-generated
+    ".idea", ".vscode", "coverage", ".coverage", "migrations",
 }
 
-# Files to skip
 SKIP_FILES = {
     "package-lock.json", "yarn.lock", "Pipfile.lock",
     "poetry.lock", "Cargo.lock", "go.sum",
 }
 
-# Max file size to index (skip giant generated files)
 MAX_FILE_SIZE_KB = 500
 
 # ─── Search / Retrieval ───────────────────────────────────────────────────────
-# Weight for BM25 vs vector similarity in hybrid search (0.0 = pure vector, 1.0 = pure BM25)
-BM25_WEIGHT = 0.3
+BM25_WEIGHT   = 0.3
 VECTOR_WEIGHT = 0.7
 
 # ─── Indexing performance ─────────────────────────────────────────────────────
-# Parallel embedding workers — controls how many chunks are sent to Ollama
-# concurrently. The bottleneck is HTTP round-trip latency (~120ms each),
-# not CPU, so more workers = proportionally faster.
-#
-# Recommendations by hardware:
-#   4GB VRAM + 32GB RAM (your setup) → 4 workers  (~100 min for 90k chunks)
-#   8GB VRAM + 32GB RAM              → 6 workers  (~65 min)
-#   GPU-backed embed (RTX 3060)      → 8 workers  (~20 min)
-#
-# Raised from 2 → 4: nomic-embed-text uses ~270MB RAM per worker.
-# 4 workers = ~1.1GB peak RAM — safe with 32GB system RAM.
-# The earlier OOM risk was on machines with less RAM; 32GB is fine at 4.
-EMBED_WORKERS = int(os.getenv("EMBED_WORKERS", "4"))
-
-# ChromaDB upsert batch size — larger = fewer disk syncs, faster overall
-# 128 is optimal for most SSDs; lower to 32 if you hit memory pressure
-CHROMA_BATCH_SIZE = int(os.getenv("CHROMA_BATCH_SIZE", "128"))
-
-# Embedding model context window sent to Ollama.
-# nomic-embed-text supports 8192 tokens but Ollama defaults to 2048.
-# 50-line chunks with verbose Java identifiers can exceed 2048 tokens,
-# causing intermittent HTTP 500 "llama runner process has terminated".
-# Setting this explicitly to 8192 prevents that error entirely.
-EMBED_NUM_CTX = int(os.getenv("EMBED_NUM_CTX", "8192"))
-
-# Maximum characters sent to the embedding model per chunk.
-# nomic-embed-text uses WordPiece tokenisation where dense Java/Kotlin code
-# can average ~2 chars/token (annotations, generics, brackets each = 1 token).
-# 2048 chars / 2 chars/token = ~1024 tokens — well within any Ollama num_ctx.
-# This is enough for semantic search quality (captures the function signature
-# + first 30-40 lines of body) and prevents ALL context overflow 500 errors.
-EMBED_MAX_CHARS = int(os.getenv("EMBED_MAX_CHARS", "2048"))
-
-# Maximum characters for an embedded query (user question / error log paste).
-# Queries are almost always short, but pasting a 500-line stack trace causes
-# "input length exceeds context length". 1500 chars = ~375-750 tokens, plenty
-# for semantic matching.
+EMBED_WORKERS      = int(os.getenv("EMBED_WORKERS", "4"))
+CHROMA_BATCH_SIZE  = int(os.getenv("CHROMA_BATCH_SIZE", "128"))
+EMBED_NUM_CTX      = int(os.getenv("EMBED_NUM_CTX", "8192"))
+EMBED_MAX_CHARS    = int(os.getenv("EMBED_MAX_CHARS", "2048"))
 EMBED_QUERY_MAX_CHARS = int(os.getenv("EMBED_QUERY_MAX_CHARS", "1500"))
 
 # ─── LLM Generation ───────────────────────────────────────────────────────────
-LLM_TEMPERATURE = 0.1       # Low temperature for deterministic code output
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))   # max response tokens
-LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "180"))  # raised: large context + slow GPU needs time
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+
+# Task-adaptive max response tokens.
+# Explanation and review need more room; chat stays concise.
+LLM_MAX_TOKENS_BY_TASK = {
+    "explain":  1500,
+    "review":   1500,
+    "generate": 2048,
+    "debug":    1200,
+    "general":  1024,
+    "chat":      800,
+}
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))  # fallback / settings UI
+
+LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "180"))

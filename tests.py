@@ -335,7 +335,8 @@ def test_context_builder_empty_chunks():
 
 def test_rough_token_count():
     from retriever.context_builder import _rough_token_count
-    text = "a" * 400
+    text = "a" * 300
+    # Updated: 300 chars // 3 = 100 (changed from //4 to //3 for code accuracy)
     assert _rough_token_count(text) == 100
 
 test("builds context from chunks", test_context_builder_basic)

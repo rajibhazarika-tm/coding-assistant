@@ -601,7 +601,7 @@ def rag_stream(
     _step("generating", None)
     t0 = t()
     full_answer = ""
-    for token in stream_response(system, user_msg, history=trimmed_history):
+    for token in stream_response(system, user_msg, history=trimmed_history, task=raq.plan.task):
         full_answer += token
         yield token
     timings["5b_generate"] = round(t() - t0, 2)

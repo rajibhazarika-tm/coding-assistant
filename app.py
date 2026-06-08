@@ -185,23 +185,24 @@ class App(ctk.CTk):
 
         self._chat_scroll = ctk.CTkScrollableFrame(p, fg_color=C["bg"],
                                                     corner_radius=0)
-        self._chat_scroll.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
+        self._chat_scroll.grid(row=0, column=0, sticky="nsew", padx=0, pady=(4,0))
         self._chat_scroll.grid_columnconfigure(0, weight=1)
         self._chat_row = 0
 
         # Input bar
-        bar = ctk.CTkFrame(p, fg_color=C["bg2"], corner_radius=0, height=60)
+        bar = ctk.CTkFrame(p, fg_color=C["bg2"], corner_radius=0, height=64)
         bar.grid(row=1, column=0, sticky="ew")
         bar.grid_columnconfigure(0, weight=1)
         bar.grid_propagate(False)
 
-        self._chat_input = ctk.CTkTextbox(bar, height=40, font=ctk.CTkFont("Segoe UI", 13),
+        self._chat_input = ctk.CTkTextbox(bar, height=44, font=ctk.CTkFont("Segoe UI", 13),
                                            fg_color=C["bg3"], border_color=C["border"],
                                            border_width=1, corner_radius=6,
                                            text_color=C["text"])
         self._chat_input.grid(row=0, column=0, padx=(12, 6), pady=10, sticky="ew")
         self._chat_input.bind("<Return>", self._chat_enter)
-        self._chat_input.bind("<Shift-Return>", lambda e: None)
+        # Shift+Enter inserts a newline; input bar stays at fixed height
+        self._chat_input.bind("<Shift-Return>", lambda e: "break")
 
         ctk.CTkButton(bar, text="Send", width=80,
                       font=ctk.CTkFont("Segoe UI Semibold", 13),
@@ -230,19 +231,37 @@ class App(ctk.CTk):
 
         lbl = ctk.CTkTextbox(outer, font=ctk.CTkFont("Segoe UI", 13),
                               fg_color="transparent", text_color="#ffffff" if is_user else C["text"],
-                              wrap="word", height=60, activate_scrollbars=False,
-                              border_width=0)
+                              wrap="word", height=40, border_width=0)
         lbl.grid(padx=12, pady=8, sticky="ew")
         lbl.insert("1.0", text)
         lbl.configure(state="disabled")
         self._resize_textbox(lbl, text)
         # Scroll to bottom
-        self.after(50, lambda: self._chat_scroll._parent_canvas.yview_moveto(1.0))
+        # Schedule scroll-to-bottom; slight delay lets geometry settle
+        self.after(80, self._scroll_chat_to_bottom)
         return lbl
 
     def _resize_textbox(self, tb: ctk.CTkTextbox, text: str):
-        lines = max(1, text.count("\n") + 1, len(text) // 70 + 1)
-        tb.configure(height=min(lines * 20 + 16, 400))
+        """
+        Resize a chat bubble textbox to fit its content.
+        No hard cap — long LLM responses must not be cut off.
+        Uses line count + character wrap estimate at ~80 chars/line.
+        Pixel height: line_count × line_height(18px) + padding(16px).
+        """
+        explicit_lines = text.count("\n") + 1
+        # Account for word-wrap: lines longer than ~80 chars wrap
+        wrap_extra = sum(max(0, len(l) - 80) // 80 for l in text.splitlines())
+        total_lines = explicit_lines + wrap_extra
+        height = total_lines * 18 + 16
+        # Minimum 40px (single line), no maximum — scroll handles overflow
+        tb.configure(height=max(40, height))
+
+    def _scroll_chat_to_bottom(self):
+        """Scroll the chat area to the bottom."""
+        try:
+            self._chat_scroll._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
 
     def _send_chat(self):
         q = self._chat_input.get("1.0", "end").strip()
@@ -973,7 +992,7 @@ class App(ctk.CTk):
                     box.insert("1.0", text)
                     self._resize_textbox(box, text)
                     box.configure(state="disabled")
-                    self._chat_scroll._parent_canvas.yview_moveto(1.0)
+                    self._scroll_chat_to_bottom()
 
                 elif kind == "chat_done":
                     pass

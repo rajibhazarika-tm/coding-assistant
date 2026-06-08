@@ -90,6 +90,7 @@ def stream_response(
     history: Optional[list[dict]] = None,
     model: str = MODEL,
     temperature: float = LLM_TEMPERATURE,
+    task: str = "general",
 ) -> Iterator[str]:
     """
     Stream tokens from Ollama as they arrive.
@@ -126,7 +127,7 @@ def stream_response(
         "stream": True,
         "options": {
             "temperature": temperature,
-            "num_predict": LLM_MAX_TOKENS,
+            "num_predict": __import__("config.settings", fromlist=["LLM_MAX_TOKENS_BY_TASK"]).LLM_MAX_TOKENS_BY_TASK.get(task, LLM_MAX_TOKENS),
             # num_ctx = total window Ollama allocates (input + output).
         # Must be large enough for: system + history + RAG context + user message + response.
         # We pass MAX_CONTEXT_TOKENS (now 4096) + LLM_MAX_TOKENS (1024) = 5120.
