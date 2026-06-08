@@ -50,6 +50,7 @@ from config.settings import (
     LLM_TEMPERATURE, LLM_MAX_TOKENS,
 )
 from retriever.hybrid_search import RetrievedChunk, retrieve as _hybrid_retrieve
+from retriever.query_correction import correct_query, CorrectedQuery
 from retriever.pipeline import (
     run_pipeline, grep_search, grep_matches_to_chunks,
     QueryPlan, analyse_query, merge_results, rerank,
@@ -66,12 +67,14 @@ from assistant.llm import stream_response, _trim_history_to_budget
 class RAGQuery:
     """Fully analysed query ready for multi-strategy retrieval."""
     original: str                    # what the user typed
+    corrected: str                   # after spelling/abbreviation correction
     reformulated: str                # conversation-aware rewrite
     sub_queries: list[str]           # decomposed sub-questions
     hypothetical_answer: str         # HDE: fake answer for embedding
     plan: QueryPlan                  # grep terms, file hints, task type
     is_multi_hop: bool               # needs info from multiple files
     is_conversational: bool          # refers to previous turns
+    corrections: list[str] = None    # list of changes made by corrector
 
 
 _QUERY_UNDERSTANDING_SYSTEM = """You are a query analyser for a code search system. Given a user question and conversation history, output a JSON object with:
@@ -94,9 +97,21 @@ def understand_query(
 ) -> RAGQuery:
     """
     Step 1: Deep query understanding using the LLM.
-    Produces a conversation-aware, decomposed, HDE-ready query.
-    Falls back gracefully if Ollama is unavailable.
+
+    First runs the fast (pure-Python) query correction pipeline:
+      - spelling fixes ("authetication" → "authentication")
+      - camelCase splitting ("getUserById" → "get user by id")
+      - abbreviation expansion ("svc" → "service")
+      - symbol/operator normalisation ("user.getName()" → "user getName")
+
+    Then passes the corrected query to the LLM for deeper analysis
+    (reformulation, HDE, multi-hop detection). This two-step approach
+    means the LLM sees clean, unambiguous input.
     """
+    # Run fast correction first (no LLM call, <1ms)
+    correction = correct_query(question)
+    working_question = correction.corrected  # feed corrected text to LLM
+
     history_text = ""
     if history:
         recent = history[-6:]  # last 3 turns
@@ -105,9 +120,9 @@ def understand_query(
             for m in recent
         )
 
-    prompt = question
+    prompt = working_question
     if history_text:
-        prompt = f"Conversation history:\n{history_text}\n\nNew question: {question}"
+        prompt = f"Conversation history:\n{history_text}\n\nNew question: {working_question}"
 
     try:
         r = requests.post(
@@ -137,31 +152,35 @@ def understand_query(
         )
         return RAGQuery(
             original=question,
-            reformulated=data.get("reformulated", question),
-            sub_queries=data.get("sub_queries", [question]),
+            corrected=working_question,
+            reformulated=data.get("reformulated", working_question),
+            sub_queries=data.get("sub_queries", [working_question]),
             hypothetical_answer=data.get("hypothetical_answer", ""),
             plan=plan,
             is_multi_hop=data.get("is_multi_hop", False),
             is_conversational=bool(history),
+            corrections=correction.corrections,
         )
     except Exception:
         # Graceful fallback
-        words = [w for w in question.split() if len(w) > 4]
+        words = [w for w in working_question.split() if len(w) > 4]
         plan = QueryPlan(
             search_terms=words[:3],
-            semantic_query=question,
+            semantic_query=working_question,
             file_hints=[],
             task="general",
             reasoning="(fallback — query analysis unavailable)",
         )
         return RAGQuery(
             original=question,
-            reformulated=question,
-            sub_queries=[question],
+            corrected=working_question,
+            reformulated=working_question,
+            sub_queries=[working_question],
             hypothetical_answer="",
             plan=plan,
             is_multi_hop=False,
             is_conversational=bool(history),
+            corrections=correction.corrections,
         )
 
 

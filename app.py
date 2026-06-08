@@ -409,12 +409,17 @@ class App(ctk.CTk):
                 def on_step(name, data):
                     if name == "query_understood":
                         raq = data
-                        lines = [
-                            f"① Query understanding",
+                        lines = [f"① Query understanding"]
+                        # Show corrections if any were made
+                        if raq.corrections:
+                            lines.append(f"   Corrections: {'; '.join(raq.corrections[:4])}")
+                        if raq.corrected != raq.original:
+                            lines.append(f"   Corrected: {raq.corrected[:80]}")
+                        lines += [
                             f"   Task: {raq.plan.task}  multi-hop: {raq.is_multi_hop}",
                             f"   Reformulated: {raq.reformulated[:80]}",
                             f"   Grep terms: {raq.plan.search_terms}",
-                            f"   Hypothetical: {raq.hypothetical_answer[:80]}..." if raq.hypothetical_answer else "",
+                            (f"   Hypothetical: {raq.hypothetical_answer[:80]}...") if raq.hypothetical_answer else "",
                         ]
                         trace_lines.extend(l for l in lines if l)
                         self._stream_queue.put(("ask_trace", "\n".join(trace_lines)))
@@ -608,6 +613,13 @@ class App(ctk.CTk):
                     )
                     total_indexed += n
 
+                # Invalidate the query correction symbol vocab so it
+                # picks up newly indexed names on the next query
+                try:
+                    from retriever.query_correction import invalidate_vocab_cache
+                    invalidate_vocab_cache()
+                except Exception:
+                    pass
                 self._stream_queue.put(("index_done",
                     f"Complete — {total_indexed:,} total chunks indexed"))
             except Exception as e:
