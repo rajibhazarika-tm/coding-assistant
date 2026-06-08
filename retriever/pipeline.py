@@ -45,14 +45,26 @@ class QueryPlan:
     reasoning: str                 # why these terms were chosen (for UI transparency)
 
 
-_PLAN_SYSTEM = """You are a code search planner. Given a user question, output a JSON object with:
-- "search_terms": list of 1-5 exact strings to grep for (function names, class names, error strings, annotation names). Be specific.
-- "semantic_query": a rewritten, expanded version of the question optimised for semantic embedding search.
-- "file_hints": list of 0-3 partial file name patterns likely to contain the answer (e.g. "Controller", "Service", "config").
-- "task": one of: explain, review, generate, debug, general
-- "reasoning": one sentence explaining your search strategy.
+_PLAN_SYSTEM = """You are a code search planner. Given a user question, output a JSON object with these exact keys:
 
-Output ONLY valid JSON. No markdown fences. No explanation outside the JSON."""
+"search_terms": list of 1-6 EXACT code identifiers to grep for. These must be strings that appear VERBATIM in source code:
+  - Method/function names: "getUserById", "processPayment", "validate_token"
+  - Class/interface names: "OrderService", "AuthController", "PaymentGateway"
+  - Annotation names: "@Transactional", "@Autowired", "@Override"
+  - Exception/error names: "NullPointerException", "ValidationException"
+  - Config keys: "spring.datasource.url", "jwt.expiration"
+  - Field/variable names if mentioned: "maxRetries", "connectionPool"
+  - Do NOT use generic English words ("user", "order", "get", "service") — only exact identifiers
+
+"semantic_query": a rewritten, expanded version of the question optimised for embedding search (2-3 sentences, technical)
+
+"file_hints": list of 0-3 partial filename patterns likely to contain the answer (e.g. "AuthService", "OrderController")
+
+"task": one of: explain, review, generate, debug, general
+
+"reasoning": one sentence explaining your search strategy
+
+Output ONLY valid JSON. No markdown fences. No text outside the JSON object."""
 
 
 def analyse_query(question: str) -> QueryPlan:
@@ -107,16 +119,31 @@ class GrepMatch:
 
 
 def _find_repo_root() -> Optional[Path]:
-    """Guess the indexed repo root from ChromaDB metadata."""
+    """
+    Infer the indexed repo root from ChromaDB chunk metadata.
+
+    Chunks store relative file paths like "src/auth/AuthService.java".
+    We sample several chunks, find their common ancestor, and return that
+    as the repo root for grep to search. Falls back to cwd if unavailable.
+    """
     try:
         from retriever.hybrid_search import _collection
+        from config.settings import INDEX_DIR
         col = _collection()
-        sample = col.get(limit=1, include=["metadatas"])
-        if sample["metadatas"]:
-            fp = sample["metadatas"][0].get("file_path", "")
-            if fp:
-                # file_path is relative; just return cwd as the root
-                return Path.cwd()
+        # Sample more chunks to get a reliable common root
+        sample = col.get(limit=10, include=["metadatas"])
+        metas = sample.get("metadatas") or []
+        # Look for an absolute repo_root hint stored in metadata
+        for m in metas:
+            if m and m.get("repo_root"):
+                p = Path(m["repo_root"])
+                if p.exists():
+                    return p
+        # Fall back: return parent of INDEX_DIR (data/index → project root)
+        # Works when running from the project directory
+        candidate = Path.cwd()
+        if candidate.exists():
+            return candidate
     except Exception:
         pass
     return Path.cwd()

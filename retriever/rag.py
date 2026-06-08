@@ -75,20 +75,36 @@ class RAGQuery:
     is_multi_hop: bool               # needs info from multiple files
     is_conversational: bool          # refers to previous turns
     corrections: list[str] = None    # list of changes made by corrector
+    grep_terms: list[str] = None     # all grep search terms (LLM + corrector symbols)
 
 
-_QUERY_UNDERSTANDING_SYSTEM = """You are a query analyser for a code search system. Given a user question and conversation history, output a JSON object with:
+_QUERY_UNDERSTANDING_SYSTEM = """You are a query analyser for a code search system. Given a user question, output a JSON object with these EXACT keys:
 
-- "reformulated": rewrite the question to be self-contained (resolve pronouns like "it", "this", "that" using history)
-- "sub_queries": list of 1-3 focused sub-questions if the query is complex, else ["<same as reformulated>"]
-- "hypothetical_answer": write a SHORT (3-5 line) hypothetical code snippet or explanation that would answer this question. This will be embedded to find similar real code.
-- "search_terms": list of 1-5 exact identifiers/symbols to grep for
-- "file_hints": list of 0-3 partial filename patterns likely to contain the answer
-- "task": one of: explain, review, generate, debug, general
-- "is_multi_hop": true if the question requires combining info from multiple files
-- "reasoning": one sentence explaining the search strategy
+"search_terms": list of 1-6 EXACT code identifiers to grep for. Rules:
+  - Use camelCase/PascalCase/snake_case as they appear verbatim in code
+  - Include method names: "getUserById", "processPayment", "validateToken"
+  - Include class names: "OrderService", "AuthController", "PaymentGateway"
+  - Include annotation names: "@Transactional", "@Autowired", "@RestController"
+  - Include exception/error names: "NullPointerException", "AuthenticationException"
+  - Include config keys if relevant: "spring.datasource.url", "jwt.secret"
+  - Do NOT use plain English like "user", "order", "get" — only identifiers that appear verbatim in source files
+  - If unsure, prefer longer specific identifiers over short generic words
 
-Output ONLY valid JSON. No markdown. No preamble."""
+"reformulated": rewrite the question to be self-contained, clear, technical (resolve "it"/"this"/"that" from history)
+
+"sub_queries": list of 1-3 focused sub-questions if complex, else ["<same as reformulated>"]
+
+"hypothetical_answer": 3-5 line realistic code snippet that would answer the question — embedded to find similar real code
+
+"file_hints": list of 0-3 partial filename patterns likely containing the answer (e.g. "AuthService", "OrderController")
+
+"task": one of: explain, review, generate, debug, general
+
+"is_multi_hop": true if the question requires info from multiple files/services
+
+"reasoning": one sentence explaining your search strategy
+
+Output ONLY valid JSON. No markdown fences. No text before or after the JSON."""
 
 
 def understand_query(
@@ -150,6 +166,12 @@ def understand_query(
             task=data.get("task", "general"),
             reasoning=data.get("reasoning", ""),
         )
+        # Build combined grep terms: LLM terms + raw symbols from corrector
+        # Raw symbols (camelCase, snake_case) are the most precise grep targets
+        llm_terms = data.get("search_terms", [])[:5]
+        raw_symbols = correction.symbols_found  # e.g. ["getUserById", "OrderService"]
+        combined_terms = list(dict.fromkeys(llm_terms + raw_symbols))  # dedup, preserve order
+
         return RAGQuery(
             original=question,
             corrected=working_question,
@@ -160,12 +182,15 @@ def understand_query(
             is_multi_hop=data.get("is_multi_hop", False),
             is_conversational=bool(history),
             corrections=correction.corrections,
+            grep_terms=combined_terms,
         )
     except Exception:
-        # Graceful fallback
+        # Graceful fallback — use corrector symbols as grep terms
         words = [w for w in working_question.split() if len(w) > 4]
+        raw_symbols = correction.symbols_found
+        combined_terms = list(dict.fromkeys(raw_symbols + words[:3]))
         plan = QueryPlan(
-            search_terms=words[:3],
+            search_terms=combined_terms[:5],
             semantic_query=working_question,
             file_hints=[],
             task="general",
@@ -181,6 +206,7 @@ def understand_query(
             is_multi_hop=False,
             is_conversational=bool(history),
             corrections=correction.corrections,
+            grep_terms=combined_terms,
         )
 
 
@@ -307,12 +333,19 @@ def multi_strategy_retrieve(
             cid, doc, meta = corpus[idx]
             _add(_build_result(cid, doc, meta, 0), weight=0.8, rank=rank)
 
-    # Strategy D: Grep for sub-query terms
-    if raq.plan.search_terms and repo_root:
-        grep_raw = grep_search(raq.plan.search_terms, repo_root=repo_root)
-        grep_chunks = grep_matches_to_chunks(grep_raw, repo_root=repo_root)
-        for rank, chunk in enumerate(grep_chunks):
-            _add(chunk, weight=1.2, rank=rank)  # exact match bonus
+    # Strategy D: Grep using combined terms (LLM + raw corrector symbols)
+    # raq.grep_terms is built in understand_query() by merging:
+    #   - LLM-extracted search_terms (e.g. "authenticate", "validateToken")
+    #   - Raw symbols from corrector (e.g. "getUserById", "OrderService")
+    # Raw symbols are the best grep targets: exact camelCase that appears
+    # verbatim in source code, before any splitting or normalisation.
+    if repo_root:
+        grep_terms = [t for t in (raq.grep_terms or raq.plan.search_terms or []) if t.strip()]
+        if grep_terms:
+            grep_raw = grep_search(grep_terms, repo_root=repo_root)
+            grep_chunks = grep_matches_to_chunks(grep_raw, repo_root=repo_root)
+            for rank, chunk in enumerate(grep_chunks):
+                _add(chunk, weight=1.2, rank=rank)  # exact match bonus
 
     # Multi-hop: run sub-queries and merge their results
     if raq.is_multi_hop and len(raq.sub_queries) > 1:
