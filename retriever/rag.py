@@ -76,6 +76,7 @@ class RAGQuery:
     is_conversational: bool          # refers to previous turns
     corrections: list[str] = None    # list of changes made by corrector
     grep_terms: list[str] = None     # all grep search terms (LLM + corrector symbols)
+    query_variants: list[str] = None # diverse phrasings for multi-angle retrieval
 
 
 _QUERY_UNDERSTANDING_SYSTEM = """You are a query analyser for a code search system. Given a user question, output a JSON object with these EXACT keys:
@@ -86,21 +87,32 @@ _QUERY_UNDERSTANDING_SYSTEM = """You are a query analyser for a code search syst
   - Include class names: "OrderService", "AuthController", "PaymentGateway"
   - Include annotation names: "@Transactional", "@Autowired", "@RestController"
   - Include exception/error names: "NullPointerException", "AuthenticationException"
-  - Include config keys if relevant: "spring.datasource.url", "jwt.secret"
-  - Do NOT use plain English like "user", "order", "get" — only identifiers that appear verbatim in source files
-  - If unsure, prefer longer specific identifiers over short generic words
+  - Only identifiers that appear verbatim in source files — no plain English words
 
-"reformulated": rewrite the question to be self-contained, clear, technical (resolve "it"/"this"/"that" from history)
+"query_variants": list of 3-5 DIVERSE search queries that all express the same intent from different angles.
+  These run as SEPARATE vector searches so they must use different vocabulary to find different relevant code.
+  Include:
+  - Conceptual angle: "how does X work" → "X implementation mechanism design pattern"
+  - Implementation angle: specific method/class names, technical terms
+  - Caller angle: "what calls X" / "where is X used" / "X invocation"
+  - Problem angle: what problem does X solve, when would you need it
+  - Synonym angle: alternative names/terms for the same concept
+  Example for "how does authentication work":
+    ["JWT token validation implementation",
+     "authenticate user credentials verify password",
+     "AuthService login method security filter chain",
+     "session management token expiry refresh",
+     "Spring Security WebSecurityConfigurerAdapter"]
 
-"sub_queries": list of 1-3 focused sub-questions if complex, else ["<same as reformulated>"]
+"reformulated": single self-contained rewrite of the question (resolve "it"/"this"/"that" from history)
 
-"hypothetical_answer": 3-5 line realistic code snippet that would answer the question — embedded to find similar real code
+"hypothetical_answer": 3-5 line realistic code snippet that would answer the question — embedded for HDE search
 
-"file_hints": list of 0-3 partial filename patterns likely containing the answer (e.g. "AuthService", "OrderController")
+"file_hints": list of 0-3 partial filename patterns likely containing the answer
 
 "task": one of: explain, review, generate, debug, general
 
-"is_multi_hop": true if the question requires info from multiple files/services
+"is_multi_hop": true if the question requires info from multiple separate files/services
 
 "reasoning": one sentence explaining your search strategy
 
@@ -167,15 +179,29 @@ def understand_query(
             reasoning=data.get("reasoning", ""),
         )
         # Build combined grep terms: LLM terms + raw symbols from corrector
-        # Raw symbols (camelCase, snake_case) are the most precise grep targets
-        llm_terms = data.get("search_terms", [])[:5]
-        raw_symbols = correction.symbols_found  # e.g. ["getUserById", "OrderService"]
-        combined_terms = list(dict.fromkeys(llm_terms + raw_symbols))  # dedup, preserve order
+        llm_terms = data.get("search_terms", [])[:6]
+        raw_symbols = correction.symbols_found
+        combined_terms = list(dict.fromkeys(llm_terms + raw_symbols))
+
+        # Build query variants — ensure reformulated is always first
+        reformulated = data.get("reformulated", working_question)
+        llm_variants = data.get("query_variants", [])[:4]  # cap at 4 so total stays ≤6
+        # Combine: reformulated + LLM variants + working question (for coverage)
+        # Deduplicate while preserving order
+        all_variants = [reformulated] + llm_variants
+        if working_question not in all_variants:
+            all_variants.append(working_question)
+        # Deduplicate
+        seen_v: set = set()
+        query_variants = []
+        for v in all_variants:
+            if v and v.strip() and v not in seen_v:
+                seen_v.add(v); query_variants.append(v)
 
         return RAGQuery(
             original=question,
             corrected=working_question,
-            reformulated=data.get("reformulated", working_question),
+            reformulated=reformulated,
             sub_queries=data.get("sub_queries", [working_question]),
             hypothetical_answer=data.get("hypothetical_answer", ""),
             plan=plan,
@@ -183,6 +209,7 @@ def understand_query(
             is_conversational=bool(history),
             corrections=correction.corrections,
             grep_terms=combined_terms,
+            query_variants=query_variants,
         )
     except Exception:
         # Graceful fallback — use corrector symbols as grep terms
@@ -207,6 +234,7 @@ def understand_query(
             is_conversational=bool(history),
             corrections=correction.corrections,
             grep_terms=combined_terms,
+            query_variants=[working_question],
         )
 
 
@@ -303,71 +331,69 @@ def multi_strategy_retrieve(
             except Exception:
                 pass
 
-    # Strategy B: Reformulated query vector search
-    q_vec = _embed_text(raq.reformulated)
-    if q_vec:
+    # Strategy B: Multi-angle vector search across ALL query variants
+    #
+    # Cursor-style improvement: instead of embedding the question once, we
+    # embed 3-5 diverse phrasings and run a separate vector search for each.
+    # Different phrasings activate different embedding dimensions, surfacing
+    # code that a single query misses.
+    #
+    # Example — "how does authentication work?":
+    #   Variant 1: "JWT token validation implementation"           → JwtFilter.java
+    #   Variant 2: "authenticate user credentials verify password" → AuthService.java
+    #   Variant 3: "AuthService login method security filter"      → SecurityConfig.java
+    #   Variant 4: "session management token expiry refresh"       → TokenRepository.java
+    #
+    # RRF naturally boosts chunks appearing in multiple variant results.
+    variants = raq.query_variants or [raq.reformulated]
+    # Weights: reformulated=1.0, then decreasing for diversity variants
+    variant_weights = [1.0, 0.85, 0.75, 0.65, 0.60]
+
+    for v_idx, variant in enumerate(variants):
+        v_weight = variant_weights[min(v_idx, len(variant_weights)-1)]
+        v_vec = _embed_text(variant)
+        if not v_vec:
+            continue
         try:
-            kw2: dict = {
-                "query_embeddings": [q_vec],
+            kw_v: dict = {
+                "query_embeddings": [v_vec],
                 "n_results": fetch_k,
                 "include": ["documents", "metadatas", "distances"],
             }
             if where_filter:
-                kw2["where"] = where_filter
-            q_res = col.query(**kw2)
+                kw_v["where"] = where_filter
+            v_res = col.query(**kw_v)
             for rank, (cid, doc, meta, _dist) in enumerate(zip(
-                q_res["ids"][0], q_res["documents"][0],
-                q_res["metadatas"][0], q_res["distances"][0],
+                v_res["ids"][0], v_res["documents"][0],
+                v_res["metadatas"][0], v_res["distances"][0],
             )):
-                _add(_build_result(cid, doc, meta or {}, 0), weight=1.0, rank=rank)
+                _add(_build_result(cid, doc, meta or {}, 0), weight=v_weight, rank=rank)
         except Exception:
             pass
 
-    # Strategy C: BM25 over full corpus
+    # Strategy C: BM25 across reformulated + first 2 variants
     bm25 = _get_cached_bm25(col, where_filter, None)
     if bm25 and corpus:
         docs = [doc for _, doc, _ in corpus]
-        bm25_scores = [bm25.score(raq.reformulated, i) for i in range(len(docs))]
-        bm25_ranked = sorted(range(len(docs)), key=lambda i: -bm25_scores[i])[:fetch_k]
+        bm25_queries = list(dict.fromkeys([raq.reformulated] + variants[:2]))
+        combined_bm25: dict[int, float] = {}
+        for bq_idx, bq in enumerate(bm25_queries):
+            bq_weight = 0.8 if bq_idx == 0 else 0.5
+            for i, s in enumerate(bm25.score(bq, j) for j in range(len(docs))):
+                combined_bm25[i] = combined_bm25.get(i, 0) + s * bq_weight
+        bm25_ranked = sorted(combined_bm25, key=lambda i: -combined_bm25[i])[:fetch_k]
         for rank, idx in enumerate(bm25_ranked):
             cid, doc, meta = corpus[idx]
             _add(_build_result(cid, doc, meta, 0), weight=0.8, rank=rank)
 
-    # Strategy D: Grep using combined terms (LLM + raw corrector symbols)
-    # raq.grep_terms is built in understand_query() by merging:
-    #   - LLM-extracted search_terms (e.g. "authenticate", "validateToken")
-    #   - Raw symbols from corrector (e.g. "getUserById", "OrderService")
-    # Raw symbols are the best grep targets: exact camelCase that appears
-    # verbatim in source code, before any splitting or normalisation.
+    # Strategy D: Grep — exact camelCase/snake_case identifiers
     if repo_root:
         grep_terms = [t for t in (raq.grep_terms or raq.plan.search_terms or []) if t.strip()]
         if grep_terms:
             grep_raw = grep_search(grep_terms, repo_root=repo_root)
             grep_chunks = grep_matches_to_chunks(grep_raw, repo_root=repo_root)
             for rank, chunk in enumerate(grep_chunks):
-                _add(chunk, weight=1.2, rank=rank)  # exact match bonus
-
-    # Multi-hop: run sub-queries and merge their results
-    if raq.is_multi_hop and len(raq.sub_queries) > 1:
-        for sq in raq.sub_queries[1:]:
-            sq_vec = _embed_text(sq)
-            if sq_vec:
-                try:
-                    kw3: dict = {
-                        "query_embeddings": [sq_vec],
-                        "n_results": min(fetch_k // 2, count, 50),
-                        "include": ["documents", "metadatas", "distances"],
-                    }
-                    if where_filter:
-                        kw3["where"] = where_filter
-                    sq_res = col.query(**kw3)
-                    for rank, (cid, doc, meta, _) in enumerate(zip(
-                        sq_res["ids"][0], sq_res["documents"][0],
-                        sq_res["metadatas"][0], sq_res["distances"][0],
-                    )):
-                        _add(_build_result(cid, doc, meta or {}, 0), weight=0.7, rank=rank)
-                except Exception:
-                    pass
+                _add(chunk, weight=1.2, rank=rank)
 
     # Collect and update scores
     candidates = []

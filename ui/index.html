@@ -696,9 +696,17 @@ async function runAsk(){
     use_rag:document.getElementById('ask-pipeline').checked,
   },(ev,d)=>{
     if(d.type==='plan'){
-      setTraceStep(1,'Query understanding',
-        d.plan.search_terms.map(t=>({l:t,t:'grep'}))
-        .concat((d.plan.file_hints||[]).map(h=>({l:'📁 '+h,t:''}))));
+      const chips=d.plan.search_terms.map(t=>({l:t,t:'grep'}))
+        .concat((d.plan.file_hints||[]).map(h=>({l:'📁 '+h,t:''})));
+      setTraceStep(1,'Query understanding',chips);
+      // Show all query variants that will be embedded
+      if(d.plan.query_variants&&d.plan.query_variants.length>1){
+        const vhtml=d.plan.query_variants.slice(0,5).map((v,i)=>
+          `<div class="trace-step"><span class="trace-num" style="color:var(--text-3)">${i+1}</span><span class="trace-txt" style="color:var(--text-3)">${v.length>75?v.slice(0,75)+'…':v}</span></div>`).join('');
+        let vWrap=document.getElementById('trace-variants');
+        if(!vWrap){vWrap=document.createElement('div');vWrap.id='trace-variants';document.getElementById('ask-trace').appendChild(vWrap);}
+        vWrap.innerHTML=`<div style="font-size:10px;color:var(--text-3);margin:4px 0 2px;padding-left:16px">Embedding ${d.plan.query_variants.length} query variants:</div>`+vhtml;
+      }
     }
     if(d.type==='retrieved'){
       setTraceStep(2,`Retrieved ${d.count} chunks`,

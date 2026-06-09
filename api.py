@@ -272,7 +272,7 @@ async def ask_stream(req: QueryRequest):
             raq = await loop.run_in_executor(
                 None, lambda: understand_query(req.question)
             )
-            yield f"data: {json.dumps({'type':'plan','plan':{'search_terms':raq.plan.search_terms,'semantic_query':raq.reformulated,'file_hints':raq.plan.file_hints,'task':raq.plan.task,'reasoning':raq.plan.reasoning,'sub_queries':raq.sub_queries,'hypothetical':raq.hypothetical_answer[:120] if raq.hypothetical_answer else ''}})}\n\n"
+            yield f"data: {json.dumps({'type':'plan','plan':{'search_terms':raq.plan.search_terms,'semantic_query':raq.reformulated,'file_hints':raq.plan.file_hints,'task':raq.plan.task,'reasoning':raq.plan.reasoning,'sub_queries':raq.sub_queries,'hypothetical':raq.hypothetical_answer[:120] if raq.hypothetical_answer else '','query_variants':raq.query_variants or []}})}\n\n"
 
             # Stream tokens from RAG pipeline
             full = ""
