@@ -162,7 +162,7 @@ _corpus_cache: dict[str, tuple[int, list, BM25]] = {}
 
 # Page size for col.get() — avoids "too many SQL variables" on Windows SQLite
 # builds that have a lower SQLITE_MAX_VARIABLE_NUMBER than the Linux default.
-_GET_PAGE_SIZE = 500
+_GET_PAGE_SIZE = 2000  # larger pages = fewer round-trips on large indexes
 
 
 def _get_cached_corpus(

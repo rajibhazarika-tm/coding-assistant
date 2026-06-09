@@ -295,7 +295,8 @@ def _apply_spelling_corrections(text: str, symbol_vocab: Optional[list[str]] = N
             continue
 
         # 2. Fuzzy match against codebase symbols (only for longer words)
-        if symbol_vocab and len(word) > 5:
+        # Skip if vocab is empty or word is too short — avoids O(n) scan
+        if symbol_vocab and len(word) >= 7:
             matches = get_close_matches(lower, [s.lower() for s in symbol_vocab],
                                         n=1, cutoff=0.85)
             if matches:
@@ -364,11 +365,14 @@ def _extract_code_symbols(text: str) -> list[str]:
     return unique
 
 
-def _load_symbol_vocab(max_symbols: int = 2000) -> list[str]:
+def _load_symbol_vocab(max_symbols: int = 500) -> list[str]:
     """
     Load symbol names from the ChromaDB index for fuzzy spelling correction.
-    Returns a list of unique name strings from chunk metadata.
-    Gracefully returns [] if the index is not available.
+
+    Capped at 500 symbols — more than enough for close-match correction,
+    and avoids O(n) difflib scan over 77k symbols per query word.
+    Only loads names ≥ 5 chars (short names cause too many false positives
+    and aren't worth the fuzzy match cost).
     """
     try:
         from indexer.embedder import _get_chroma_client
@@ -377,15 +381,17 @@ def _load_symbol_vocab(max_symbols: int = 2000) -> list[str]:
         col = client.get_collection(CHROMA_COLLECTION)
         if col.count() == 0:
             return []
-        # Sample metadata to extract symbol names
-        result = col.get(limit=min(max_symbols, col.count()),
+        result = col.get(limit=min(max_symbols * 3, col.count()),
                          include=["metadatas"])
         names = set()
         for meta in result.get("metadatas", []):
             if meta:
                 name = meta.get("name", "")
-                if name and len(name) > 3 and not name.isdigit():
+                # Only keep meaningful identifiers (≥5 chars, not purely numeric)
+                if name and len(name) >= 5 and not name.isdigit():
                     names.add(name)
+                    if len(names) >= max_symbols:
+                        break
         return list(names)
     except Exception:
         return []

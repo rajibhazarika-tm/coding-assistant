@@ -71,6 +71,27 @@ class ChatRequest(BaseModel):
     question: str
 
 # ── Settings endpoints ────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup():
+    """
+    Warm the BM25 corpus cache in the background so the first user query
+    does not pay the cold-start cost (loading all chunks from ChromaDB).
+    For a 77k-chunk index this saves ~4 seconds on the first query.
+    """
+    import asyncio, threading
+    def _warm():
+        try:
+            from retriever.hybrid_search import _collection, _get_cached_corpus, _get_cached_bm25
+            col = _collection()
+            if col.count() > 0:
+                corpus = _get_cached_corpus(col, None, None)
+                _get_cached_bm25(col, None, None)
+                print(f"[startup] BM25 corpus warmed: {len(corpus)} chunks cached")
+        except Exception as e:
+            print(f"[startup] Cache warm failed (index may not exist yet): {e}")
+    threading.Thread(target=_warm, daemon=True, name="cache-warmer").start()
+
+
 @app.get("/api/settings")
 def get_settings():
     import config.settings as s
