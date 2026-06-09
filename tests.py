@@ -41,7 +41,7 @@ def test_config_imports():
     )
     assert MODEL == "qwen2.5-coder:7b"
     assert MAX_CONTEXT_TOKENS == 4096  # raised from 2048 to fix chat timeout
-    assert TOP_K_CHUNKS == 5
+    assert TOP_K_CHUNKS == 3  # lowered from 5 for precision
     assert ".py" in SUPPORTED_EXTENSIONS
     assert "node_modules" in SKIP_DIRS
     assert INDEX_DIR.exists()

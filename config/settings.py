@@ -24,7 +24,12 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # KV cache at 4096 tokens ≈ 512MB — leaves ~3.5GB for model weights.
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "4096"))
 
-TOP_K_CHUNKS    = int(os.getenv("TOP_K_CHUNKS", "5"))
+# Number of chunks passed to the LLM context.
+# Lower = more precise answers (only the most relevant code).
+# Raise if answers seem incomplete (missing related functions).
+# Default 3: for specific questions (getUserById) 1-2 chunks are ideal;
+# for broader questions (auth flow) 3 gives enough coverage.
+TOP_K_CHUNKS    = int(os.getenv("TOP_K_CHUNKS", "3"))
 
 # Tokens reserved for: system prompt (~400) + question (~200) + sources header (~100)
 # Raised from 512 to 700 to match actual system prompt sizes.

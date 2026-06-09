@@ -395,14 +395,41 @@ def multi_strategy_retrieve(
             for rank, chunk in enumerate(grep_chunks):
                 _add(chunk, weight=1.2, rank=rank)
 
-    # Collect and update scores
+    # Collect, filter weak candidates, and rerank
     candidates = []
     for chunk, score in all_results.values():
         chunk.score = round(score, 4)
         candidates.append(chunk)
 
-    # Rerank with diversity + task awareness
-    return rerank(candidates, raq.original, raq.plan, top_k=top_k * 2)
+    if not candidates:
+        return []
+
+    # Adaptive minimum score: only drop truly weak candidates.
+    # Keep at least top_k*2 candidates so reranker has enough to work with.
+    if len(candidates) > top_k * 2:
+        scores = sorted(c.score for c in candidates)
+        # Minimum = 20th percentile score — drops the bottom 20% of retrievals
+        cutoff_idx = max(0, len(scores) - int(len(scores) * 0.80) - 1)
+        min_score = scores[cutoff_idx] if cutoff_idx < len(scores) else 0
+        filtered = [c for c in candidates if c.score >= min_score]
+        candidates = filtered if len(filtered) >= top_k else candidates
+
+    # Rerank with precision-focused scorer
+    # Enrich plan.search_terms with exact grep_terms for the reranker's
+    # exact-identifier bonus (chunk.name == search_term → +3.0 score)
+    if raq.grep_terms:
+        from retriever.pipeline import QueryPlan
+        enriched_plan = QueryPlan(
+            search_terms=list(dict.fromkeys((raq.plan.search_terms or []) + raq.grep_terms)),
+            semantic_query=raq.plan.semantic_query,
+            file_hints=raq.plan.file_hints,
+            task=raq.plan.task,
+            reasoning=raq.plan.reasoning,
+        )
+    else:
+        enriched_plan = raq.plan
+
+    return rerank(candidates, raq.original, enriched_plan, top_k=top_k * 2)
 
 
 # ── 4. Contextual Compression ─────────────────────────────────────────────────

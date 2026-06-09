@@ -388,25 +388,42 @@ def _overlap_key(chunk: RetrievedChunk) -> str:
 
 # ── Step 5: Rerank ────────────────────────────────────────────────────────────
 
+# Minimum overlap ratio for a chunk to be included.
+# Chunks with no meaningful token overlap with the query are almost certainly
+# vaguely relevant at best — retrievd because they share a file/class with
+# something relevant, not because they answer the question.
+_MIN_OVERLAP_THRESHOLD = 0.05   # at least 5% query token overlap
+
+
 def rerank(
     chunks: list[RetrievedChunk],
     query: str,
     plan: QueryPlan,
     top_k: int = 5,
+    min_overlap: float = _MIN_OVERLAP_THRESHOLD,
 ) -> list[RetrievedChunk]:
     """
-    Step 5: LLM-free cross-encoder reranking using:
-    - Base retrieval score
-    - Query term overlap (how many search terms appear in this chunk)
-    - File hint match
-    - Source diversity (avoid returning 5 chunks from the same file)
-    - Penalise test files when task is not 'review' (tests rarely explain production logic)
+    Step 5: Precision-focused reranking.
+
+    Scoring:
+      base_score         — RRF score from retrieval (position signal)
+      exact_id_bonus     — large boost if a grep_term appears verbatim in the chunk
+      query_overlap      — fraction of query tokens present in chunk
+      plan_overlap       — fraction of plan search_terms present in chunk
+      zero_overlap_drop  — multiply by 0.3 if chunk has < min_overlap with query
+      test_file_penalty  — 0.6× for test files when task is not review/debug
+      diversity_penalty  — 1/(1+0.5n) for the n-th chunk from same file
+
+    Chunks below min_overlap are kept only if nothing better exists (ensures
+    the model always has some context), but ranked last.
     """
     if not chunks:
         return []
 
-    query_tokens = set(_tokenize_simple(query))
-    plan_tokens  = set(_tokenize_simple(" ".join(plan.search_terms)))
+    query_tokens  = set(_tokenize_simple(query))
+    plan_tokens   = set(_tokenize_simple(" ".join(plan.search_terms or [])))
+    # Also include raw grep_terms as exact-match targets
+    grep_terms_raw = set(t.lower() for t in (getattr(plan, "search_terms", None) or []))
 
     scored: list[tuple[float, RetrievedChunk]] = []
     file_counts: dict[str, int] = {}
@@ -414,29 +431,51 @@ def rerank(
     for chunk in chunks:
         s = chunk.score
 
-        # Term overlap boost
-        chunk_tokens = set(_tokenize_simple(chunk.content))
-        overlap = len(query_tokens & chunk_tokens) / max(len(query_tokens), 1)
-        plan_overlap = len(plan_tokens & chunk_tokens) / max(len(plan_tokens), 1)
-        s += overlap * 0.4 + plan_overlap * 0.6
+        chunk_tokens  = set(_tokenize_simple(chunk.content))
+        chunk_content_lower = chunk.content.lower()
 
-        # Penalise test files unless task is review/debug
+        # ── Exact identifier bonus ──────────────────────────────────────────
+        # If any grep search term appears VERBATIM in the chunk content,
+        # this chunk is almost certainly directly relevant.
+        # Boost is large (2.0) to ensure it beats vaguely related chunks.
+        exact_hits = sum(1 for t in grep_terms_raw if t in chunk_content_lower)
+        if exact_hits:
+            s += exact_hits * 2.0
+
+        # Also boost if chunk NAME exactly matches a search term
+        chunk_name_lower = (chunk.name or "").lower()
+        if chunk_name_lower and chunk_name_lower in grep_terms_raw:
+            s += 3.0  # direct function/method name match — highest signal
+
+        # ── Token overlap ───────────────────────────────────────────────────
+        query_overlap = len(query_tokens & chunk_tokens) / max(len(query_tokens), 1)
+        plan_overlap  = len(plan_tokens  & chunk_tokens) / max(len(plan_tokens),  1)
+        s += query_overlap * 0.5 + plan_overlap * 0.8
+
+        # ── Zero/low overlap penalty ────────────────────────────────────────
+        # Chunks with very little query overlap are vaguely relevant at best.
+        # Drop their score so they rank below specific chunks.
+        # They're kept (not filtered) in case all chunks have low overlap.
+        combined_overlap = max(query_overlap, plan_overlap)
+        if combined_overlap < min_overlap and exact_hits == 0:
+            s *= 0.3  # strong down-rank for vague chunks
+
+        # ── Test file penalty ───────────────────────────────────────────────
         fp_lower = chunk.file_path.lower()
         is_test = any(t in fp_lower for t in ("test", "spec", "_test.", ".test."))
         if is_test and plan.task not in ("review", "debug"):
             s *= 0.6
 
-        # Penalise if we already have chunks from this file (diversity)
+        # ── Diversity penalty ───────────────────────────────────────────────
         n_from_file = file_counts.get(chunk.file_path, 0)
-        s *= (1.0 / (1 + n_from_file * 0.4))
-
+        s *= (1.0 / (1 + n_from_file * 0.5))  # stronger: 0.5 vs old 0.4
         file_counts[chunk.file_path] = n_from_file + 1
+
         scored.append((s, chunk))
 
     scored.sort(key=lambda x: -x[0])
     result = [c for _, c in scored[:top_k]]
 
-    # Update scores with final reranked values
     for i, (s, c) in enumerate(scored[:top_k]):
         result[i].score = round(s, 4)
 
@@ -444,8 +483,29 @@ def rerank(
 
 
 def _tokenize_simple(text: str) -> list[str]:
-    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
-    return re.findall(r"[a-zA-Z0-9]+", text.lower())
+    """
+    Tokenise text for overlap scoring.
+
+    Keeps BOTH the original camelCase tokens AND their split components:
+    "getUserById" → ["getUserById", "get", "user", "by", "id"]
+
+    This ensures "getUserById" in the query matches "getUserById" in the
+    chunk content as an exact token, and also matches split variants.
+    The old version only split, so 'getUserById' in query never exactly
+    matched 'getUserById' in a chunk's method name.
+    """
+    tokens = []
+    # First pass: extract raw alphanumeric tokens (includes camelCase whole)
+    raw = re.findall(r"[a-zA-Z0-9_]+", text)
+    for token in raw:
+        lower = token.lower()
+        tokens.append(lower)  # whole token (camelCase intact, lowercased)
+        # Also add the split components for partial matching
+        split = re.sub(r"([a-z])([A-Z])", r"\1 \2", token)
+        parts = split.lower().split()
+        if len(parts) > 1:
+            tokens.extend(parts)
+    return tokens
 
 
 # ── Full pipeline ─────────────────────────────────────────────────────────────
