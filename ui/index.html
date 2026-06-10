@@ -198,6 +198,58 @@ textarea{resize:vertical;min-height:80px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;display:inline-block}
 
+/* ── LLM Debug Bar ──────────────────────────────────── */
+#llm-debug-bar {
+  position: fixed; bottom: 0; left: var(--sidebar); right: 0;
+  background: #0a0a0f; border-top: 1px solid var(--border);
+  font-family: var(--mono); font-size: 11px; color: var(--text-2);
+  z-index: 100; transition: height .2s ease;
+}
+#llm-debug-bar.collapsed { height: 28px; overflow: hidden; }
+#llm-debug-bar.expanded  { height: 220px; }
+#debug-toggle-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 14px; height: 28px; cursor: pointer;
+  border-bottom: 1px solid var(--border); user-select: none;
+}
+#debug-toggle-row:hover { background: var(--bg-hover); }
+.debug-pill {
+  font-size: 10px; padding: 1px 7px; border-radius: 99px;
+  background: var(--bg-active); border: 1px solid var(--border-md);
+  color: var(--text-2); white-space: nowrap;
+}
+.debug-pill.ok  { border-color: #1a3a2a; background:#0d2218; color: var(--green); }
+.debug-pill.slow{ border-color: #3a2a0d; background:#2a1a05; color: var(--amber); }
+.debug-pill.err { border-color: #3a1515; background:#2a0d0d; color: var(--red);   }
+#debug-body {
+  padding: 10px 14px; overflow-y: auto; height: 192px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px;
+}
+.debug-section { display: flex; flex-direction: column; gap: 4px; }
+.debug-section-title {
+  font-size: 9px; font-weight: 600; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px;
+}
+.debug-row { display: flex; gap: 6px; align-items: baseline; }
+.debug-key { color: var(--text-3); min-width: 120px; }
+.debug-val { color: var(--text); font-weight: 500; }
+.debug-val.highlight { color: var(--accent); }
+.debug-val.warn { color: var(--amber); }
+.debug-log {
+  grid-column: 1 / -1;
+  background: #050508; border: 1px solid var(--border);
+  border-radius: 4px; padding: 6px 8px; height: 70px;
+  overflow-y: auto; font-size: 10.5px; line-height: 1.6;
+  color: #6b7eb8;
+}
+.debug-log .log-ts  { color: var(--text-3); }
+.debug-log .log-ok  { color: var(--green); }
+.debug-log .log-err { color: var(--red); }
+.debug-log .log-info{ color: var(--accent); }
+
+/* Push panel content above debug bar */
+#main { padding-bottom: 28px; }
+
 /* Toggle */
 .toggle-row{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
 .toggle-row input[type=checkbox]{width:36px;height:20px;appearance:none;background:var(--bg-active);border:1px solid var(--border-md);border-radius:99px;cursor:pointer;position:relative;flex-shrink:0;transition:background .2s}
@@ -634,6 +686,7 @@ async function sendChat(){
   try{
     await streamSSE('/api/chat/stream',{messages:chatHistory,question:q},(ev,d)=>{
       if(d.type==='sources')showSources(srcRow,d.files);
+      if(d.type==='llm_stats'){updateDebug(d.stats);}
       if(d.type==='token'){text+=d.text;renderMd(aiBubble,text);scrollChat();}
       if(d.type==='done'){
         chatHistory.push({role:'user',content:q},{role:'assistant',content:text});
@@ -713,6 +766,7 @@ async function runAsk(){
         (d.chunks||[]).slice(0,4).map(c=>({l:c.file.split(/[/\\]/).pop()+':'+c.lines,t:c.source==='grep'?'grep':''})));
     }
     if(d.type==='sources')showSources(document.getElementById('ask-sources'),d.files);
+    if(d.type==='llm_stats'){updateDebug(d.stats);}
     if(d.type==='token'){text+=d.text;renderMd(document.getElementById('ask-output'),text);}
     if(d.type==='done'){btn.disabled=false;btn.textContent='Ask';pollStatus();}
     if(d.type==='context_tokens')setTraceStep(3,`Context: ~${d.tokens} tokens`,[]);
@@ -780,6 +834,7 @@ async function runReview(){
   let text='';
   await streamSSE('/api/review/stream',{file_path:fp},(ev,d)=>{
     if(d.type==='sources')showSources(document.getElementById('review-sources'),d.files);
+    if(d.type==='llm_stats'){updateDebug(d.stats);}
     if(d.type==='token'){text+=d.text;renderMd(document.getElementById('review-output'),text);}
     if(d.type==='done'){btn.disabled=false;btn.textContent='Review';}
   });
@@ -798,6 +853,7 @@ async function runExplain(){
   let text='';
   await streamSSE('/api/explain/stream',{file_path:fp,function_name:fn},(ev,d)=>{
     if(d.type==='sources')showSources(document.getElementById('explain-sources'),d.files);
+    if(d.type==='llm_stats'){updateDebug(d.stats);}
     if(d.type==='token'){text+=d.text;renderMd(document.getElementById('explain-output'),text);}
     if(d.type==='done'){btn.disabled=false;btn.textContent='Explain';}
   });
@@ -815,6 +871,7 @@ async function runGenerate(){
   let text='';
   await streamSSE('/api/generate/stream',{description:desc},(ev,d)=>{
     if(d.type==='sources')showSources(document.getElementById('gen-sources'),d.files);
+    if(d.type==='llm_stats'){updateDebug(d.stats);}
     if(d.type==='token'){text+=d.text;renderMd(document.getElementById('gen-output'),text);}
     if(d.type==='done'){btn.disabled=false;btn.textContent='Generate';}
   });
@@ -838,6 +895,66 @@ async function loadSettings(){
 }
 loadSettings();
 
+// ── LLM Debug Bar ────────────────────────────────────────────────
+let debugExpanded = false;
+function toggleDebug() {
+  debugExpanded = !debugExpanded;
+  const bar = document.getElementById('llm-debug-bar');
+  const arrow = document.getElementById('debug-arrow');
+  bar.className = debugExpanded ? 'expanded' : 'collapsed';
+  arrow.textContent = debugExpanded ? '▼ collapse' : '▲ expand';
+  document.getElementById('main').style.paddingBottom = debugExpanded ? '220px' : '28px';
+}
+
+function updateDebug(stats) {
+  const s = stats;
+  // Pills (always visible)
+  const setP = (id, text, cls) => {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = 'debug-pill ' + (cls||'');
+  };
+  setP('dpill-model', s.model||'–');
+  const speed = s.tokens_per_sec || 0;
+  setP('dpill-speed', speed ? speed.toFixed(1)+' tok/s' : '–',
+    speed > 20 ? 'ok' : speed > 8 ? '' : 'slow');
+  setP('dpill-tokens', s.total_tokens ? s.total_tokens+' tokens' : '–');
+  setP('dpill-latency', s.total_ms ? (s.total_ms/1000).toFixed(1)+'s' : '–');
+
+  // Body fields
+  const set = (id, val) => { const e=document.getElementById(id); if(e) e.textContent=val||'–'; };
+  set('d-model', s.model);
+  set('d-prompt-tok', s.prompt_tokens ? s.prompt_tokens.toLocaleString()+' tokens' : '–');
+  set('d-out-tok',   s.output_tokens  ? s.output_tokens.toLocaleString()+' tokens'  : '–');
+  set('d-speed',     speed ? speed.toFixed(1)+' tokens/sec' : '–');
+  set('d-total-tok', s.total_tokens ? s.total_tokens.toLocaleString()+' tokens' : '–');
+  set('d-load',      s.load_ms    ? s.load_ms+'ms'     : '0ms (cached)');
+  set('d-prompt-ms', s.prompt_ms  ? s.prompt_ms+'ms'   : '–');
+  set('d-eval-ms',   s.eval_ms    ? s.eval_ms+'ms'     : '–');
+  set('d-total-ms',  s.total_ms   ? (s.total_ms/1000).toFixed(2)+'s' : '–');
+
+  // Log entry
+  addDebugLog(s);
+
+  // Warn classes
+  document.getElementById('d-speed').className = 'debug-val' + (speed>20?' highlight':speed<6?' warn':'');
+  document.getElementById('d-eval-ms').className = 'debug-val highlight';
+}
+
+function addDebugLog(s) {
+  const log = document.getElementById('d-log');
+  const ts = new Date().toLocaleTimeString();
+  const speed = s.tokens_per_sec||0;
+  const cls = speed > 20 ? 'log-ok' : speed > 6 ? 'log-info' : 'log-err';
+  const line = document.createElement('div');
+  line.innerHTML = `<span class="log-ts">[${ts}]</span> `+
+    `<span class="${cls}">${s.model} · ${s.output_tokens} tokens · ${speed.toFixed(1)} tok/s · `+
+    `${(s.total_ms/1000).toFixed(1)}s total `+
+    `(load ${s.load_ms}ms · prompt ${s.prompt_ms}ms · gen ${s.eval_ms}ms)</span>`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
 async function saveSettings(){
   const body={
     model:document.getElementById('s-model').value,
@@ -859,5 +976,40 @@ async function saveSettings(){
   pollStatus();
 }
 </script>
+
+<!-- ── LLM Debug Bar ──────────────────────────────────────────── -->
+<div id="llm-debug-bar" class="collapsed">
+  <div id="debug-toggle-row" onclick="toggleDebug()">
+    <span style="color:var(--text-3);font-size:10px">▶</span>
+    <span style="color:var(--text-2);font-size:11px;font-weight:500">LLM Debug</span>
+    <span id="dpill-model" class="debug-pill">–</span>
+    <span id="dpill-speed" class="debug-pill">–</span>
+    <span id="dpill-tokens" class="debug-pill">–</span>
+    <span id="dpill-latency" class="debug-pill">–</span>
+    <span style="flex:1"></span>
+    <span id="debug-arrow" style="color:var(--text-3);font-size:11px">▲ expand</span>
+  </div>
+  <div id="debug-body">
+    <div class="debug-section">
+      <div class="debug-section-title">Generation</div>
+      <div class="debug-row"><span class="debug-key">Model</span><span class="debug-val" id="d-model">–</span></div>
+      <div class="debug-row"><span class="debug-key">Prompt tokens</span><span class="debug-val" id="d-prompt-tok">–</span></div>
+      <div class="debug-row"><span class="debug-key">Output tokens</span><span class="debug-val highlight" id="d-out-tok">–</span></div>
+      <div class="debug-row"><span class="debug-key">Speed</span><span class="debug-val highlight" id="d-speed">–</span></div>
+      <div class="debug-row"><span class="debug-key">Total tokens</span><span class="debug-val" id="d-total-tok">–</span></div>
+    </div>
+    <div class="debug-section">
+      <div class="debug-section-title">Timing</div>
+      <div class="debug-row"><span class="debug-key">Model load</span><span class="debug-val" id="d-load">–</span></div>
+      <div class="debug-row"><span class="debug-key">Prompt eval</span><span class="debug-val" id="d-prompt-ms">–</span></div>
+      <div class="debug-row"><span class="debug-key">Token gen</span><span class="debug-val highlight" id="d-eval-ms">–</span></div>
+      <div class="debug-row"><span class="debug-key">Total (Ollama)</span><span class="debug-val" id="d-total-ms">–</span></div>
+    </div>
+    <div class="debug-section" style="grid-column:1/-1">
+      <div class="debug-section-title">Ollama log</div>
+      <div class="debug-log" id="d-log"></div>
+    </div>
+  </div>
+</div>
 </body>
 </html>

@@ -153,6 +153,26 @@ def stream_response(
                     if token:
                         yield token
                     if data.get("done"):
+                        # Capture Ollama generation stats from the final frame.
+                        # All durations are in nanoseconds.
+                        stats = {
+                            "model":            data.get("model", model),
+                            "prompt_tokens":    data.get("prompt_eval_count", 0),
+                            "output_tokens":    data.get("eval_count", 0),
+                            "total_tokens":     (data.get("prompt_eval_count", 0)
+                                                 + data.get("eval_count", 0)),
+                            "load_ms":          round(data.get("load_duration", 0) / 1e6),
+                            "prompt_ms":        round(data.get("prompt_eval_duration", 0) / 1e6),
+                            "eval_ms":          round(data.get("eval_duration", 0) / 1e6),
+                            "total_ms":         round(data.get("total_duration", 0) / 1e6),
+                            "tokens_per_sec":   round(
+                                data.get("eval_count", 0)
+                                / max(data.get("eval_duration", 1) / 1e9, 0.001), 1
+                            ),
+                        }
+                        # Yield stats as a special sentinel so callers can
+                        # surface them without changing the string token contract.
+                        yield f"__llm_stats__{json.dumps(stats)}__end_stats__"
                         break
                 except json.JSONDecodeError:
                     continue

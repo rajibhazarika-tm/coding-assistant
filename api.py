@@ -306,6 +306,8 @@ async def ask_stream(req: QueryRequest):
                 check_faithfulness_flag=req.check_faithfulness,
                 on_step=on_step,
             ):
+                if isinstance(token, str) and token.startswith("__llm_stats__"):
+                    continue  # already handled via on_step callback
                 full += token
                 yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
 
@@ -319,6 +321,8 @@ async def ask_stream(req: QueryRequest):
                     yield f"data: {json.dumps({'type':'context_tokens','tokens':tok})}\n\n"
                 elif name == "faithfulness":
                     yield f"data: {json.dumps({'type':'faithfulness','result':data})}\n\n"
+                elif name == "llm_stats":
+                    yield f"data: {json.dumps({'type':'llm_stats','stats':data})}\n\n"
 
         else:
             from retriever.hybrid_search import retrieve
@@ -335,6 +339,13 @@ async def ask_stream(req: QueryRequest):
                 sources = []
             yield f"data: {json.dumps({'type':'sources','files':sources})}\n\n"
             for token in stream_response(system, user_msg):
+                if isinstance(token, str) and token.startswith("__llm_stats__"):
+                    try:
+                        stats = json.loads(token[len("__llm_stats__"):-len("__end_stats__")])
+                        yield f"data: {json.dumps({'type':'llm_stats','stats':stats})}\n\n"
+                    except Exception:
+                        pass
+                    continue
                 yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
 
         yield f"data: {json.dumps({'type':'done'})}\n\n"
@@ -365,6 +376,13 @@ async def review_stream(req: ReviewRequest):
         system, user_msg = build_prompt("review", query, context, sources)
         yield f"data: {json.dumps({'type':'sources','files':sources})}\n\n"
         for token in stream_response(system, user_msg):
+            if isinstance(token, str) and token.startswith("__llm_stats__"):
+                try:
+                    stats = json.loads(token[len("__llm_stats__"):-len("__end_stats__")])
+                    yield f"data: {json.dumps({'type':'llm_stats','stats':stats})}\n\n"
+                except Exception:
+                    pass
+                continue
             yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
         yield f"data: {json.dumps({'type':'done'})}\n\n"
 
@@ -389,6 +407,13 @@ async def explain_stream(req: ExplainRequest):
         system, user_msg = build_prompt("explain", query, context, sources)
         yield f"data: {json.dumps({'type':'sources','files':sources})}\n\n"
         for token in stream_response(system, user_msg):
+            if isinstance(token, str) and token.startswith("__llm_stats__"):
+                try:
+                    stats = json.loads(token[len("__llm_stats__"):-len("__end_stats__")])
+                    yield f"data: {json.dumps({'type':'llm_stats','stats':stats})}\n\n"
+                except Exception:
+                    pass
+                continue
             yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
         yield f"data: {json.dumps({'type':'done'})}\n\n"
 
@@ -414,6 +439,13 @@ async def generate_stream(req: GenerateRequest):
             sources = []
         yield f"data: {json.dumps({'type':'sources','files':sources})}\n\n"
         for token in stream_response(system, user_msg):
+            if isinstance(token, str) and token.startswith("__llm_stats__"):
+                try:
+                    stats = json.loads(token[len("__llm_stats__"):-len("__end_stats__")])
+                    yield f"data: {json.dumps({'type':'llm_stats','stats':stats})}\n\n"
+                except Exception:
+                    pass
+                continue
             yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
         yield f"data: {json.dumps({'type':'done'})}\n\n"
 
@@ -436,6 +468,13 @@ async def chat_stream(req: ChatRequest):
 
         yield f"data: {json.dumps({'type':'sources','files':sources})}\n\n"
         for token in stream_response(system, user_msg, history=history):
+            if isinstance(token, str) and token.startswith("__llm_stats__"):
+                try:
+                    stats = json.loads(token[len("__llm_stats__"):-len("__end_stats__")])
+                    yield f"data: {json.dumps({'type':'llm_stats','stats':stats})}\n\n"
+                except Exception:
+                    pass
+                continue
             yield f"data: {json.dumps({'type':'token','text':token})}\n\n"
         yield f"data: {json.dumps({'type':'done'})}\n\n"
 

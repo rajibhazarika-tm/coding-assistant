@@ -655,6 +655,16 @@ def rag_stream(
     t0 = t()
     full_answer = ""
     for token in stream_response(system, user_msg, history=trimmed_history, task=raq.plan.task):
+        # Intercept Ollama stats sentinel — emit via on_step, don't yield as text
+        if isinstance(token, str) and token.startswith("__llm_stats__"):
+            try:
+                import json as _json
+                stats = _json.loads(token[len("__llm_stats__"):-len("__end_stats__")])
+                if on_step:
+                    on_step("llm_stats", stats)
+            except Exception:
+                pass
+            continue
         full_answer += token
         yield token
     timings["5b_generate"] = round(t() - t0, 2)
